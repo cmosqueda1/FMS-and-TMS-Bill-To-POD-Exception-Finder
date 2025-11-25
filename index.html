@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FMS / TMS POD Status Compare (Bill-To)</title>
+<style>
+  :root{
+    --bg:#0a0c10;--card:#0f1420;--text:#e6edf6;--muted:#93a4b7;
+    --accent:#7c3aed;--accent2:#22d3ee;--ok:#10b981;--bad:#ef4444;--border:#1f2a3a
+  }
+  *{box-sizing:border-box}
+  html,body{
+    margin:0;
+    background:radial-gradient(1200px 900px at 10% -10%, #121a2b 0%, transparent 60%), var(--bg);
+    color:var(--text);
+    font-family:Inter,system-ui,Segoe UI,Roboto,Ubuntu,Arial,sans-serif
+  }
+  .wrap{max-width:980px;margin:40px auto;padding:0 16px 64px}
+  h1{margin:0 0 6px;font-size:26px;font-weight:800}
+  .sub{color:var(--muted);margin-bottom:18px}
+  .card{
+    background:linear-gradient(180deg,rgba(255,255,255,.02),transparent),var(--card);
+    border:1px solid var(--border);border-radius:18px;padding:18px;
+    box-shadow:0 10px 30px rgba(0,0,0,.35)
+  }
+  .stack{display:grid;gap:12px}
+  .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .brand{display:inline-flex;align-items:center;gap:10px}
+  .brand .dot{
+    width:10px;height:10px;border-radius:50%;
+    background:linear-gradient(90deg,var(--accent),var(--accent2));
+    box-shadow:0 0 18px rgba(124,58,237,.7)
+  }
+  label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+  input[type=text]{
+    width:340px;background:#0b0f19;border:1px solid var(--border);
+    color:var(--text);border-radius:14px;padding:10px 12px;font-size:14px;outline:none
+  }
+  input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 1px rgba(124,58,237,.5)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .btn{
+    cursor:pointer;border:1px solid transparent;border-radius:14px;
+    padding:12px 16px;font-weight:700;font-size:14px;
+    display:inline-flex;align-items:center;gap:8px
+  }
+  .btn-primary{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#060913}
+  .btn-ghost{background:transparent;border-color:var(--border);color:var(--text)}
+  .btn:disabled{opacity:.6;cursor:not-allowed}
+  .pill{
+    display:inline-flex;align-items:center;gap:8px;padding:6px 10px;
+    border-radius:999px;border:1px solid var(--border);
+    background:#0b0f19;font-size:12px;color:var(--muted)
+  }
+  .pill-dot{
+    width:8px;height:8px;border-radius:999px;background:#f97373;
+  }
+  .muted{color:var(--muted);font-size:12px}
+  .err{color:var(--bad);font-size:12px}
+  pre{
+    white-space:pre-wrap;word-break:break-word;background:#0b0f19;
+    border:1px solid var(--border);border-radius:14px;padding:12px;
+    font-size:13px;max-height:460px;overflow:auto
+  }
+  .bar{height:12px;border-radius:999px;background:#0b0f19;border:1px solid var(--border);overflow:hidden}
+  .fill{height:100%;width:0;background:linear-gradient(90deg,var(--ok),var(--accent2));transition:width .2s ease}
+  .status-row{display:flex;justify-content:space-between;align-items:center;margin-top:4px}
+  .spinner{
+    width:14px;height:14px;border-radius:999px;
+    border:2px solid rgba(148,163,184,.4);border-top-color:var(--accent);
+    animation:spin .7s linear infinite
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* AUTOCOMPLETE */
+  .autocomplete-wrapper{position:relative;max-width:360px}
+  .autocomplete-list{
+    position:absolute;left:0;right:0;top:105%;
+    background:#020617;border-radius:14px;border:1px solid var(--border);
+    box-shadow:0 16px 30px rgba(0,0,0,.7);
+    max-height:220px;overflow:auto;z-index:20;padding:4px 0;display:none
+  }
+  .autocomplete-item{
+    padding:6px 12px;font-size:13px;cursor:pointer;
+    display:flex;flex-direction:column;gap:2px
+  }
+  .autocomplete-item:hover{background:#111827}
+  .autocomplete-main{color:var(--text)}
+  .autocomplete-sub{color:var(--muted);font-size:11px}
+  .autocomplete-empty{padding:6px 12px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1 style="margin:0">FMS / TMS POD Status Compare (Bill-To)</h1>
+    </div>
+    <div class="row" style="gap:8px">
+      <div class="pill">
+        <span class="pill-dot" id="fmsDot"></span>
+        <span id="fmsAuthText">FMS: Not authenticated</span>
+      </div>
+      <div class="pill">
+        <span class="pill-dot" id="tmsDot"></span>
+        <span id="tmsAuthText">TMS: Not authenticated</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="sub">
+    Select a <strong>Bill-To</strong> from FMS, then this tool will:<br/>
+    • Look up all PROs tied to Bill-To in <strong>FMS</strong><br/>
+    • Look up all PROs tied to same Bill-To in <strong>TMS</strong> (stage -4..4)<br/>
+    • Cross-match both systems, performing follow-up searches when needed<br/>
+    • Output format: <code>PRO: #### | FMS - POD found | FMS Status | TMS - POD found | TMS Status</code>
+  </div>
+
+  <div class="card stack">
+    <div>
+      <label for="billToInput">Bill-To (live search)</label>
+      <div class="autocomplete-wrapper">
+        <input id="billToInput" type="text" placeholder="Type 2+ chars (e.g. WALMART)" autocomplete="off"/>
+        <div id="billToList" class="autocomplete-list"></div>
+      </div>
+      <div class="muted" id="billToHelp">Start typing to search FMS Bill-To.</div>
+      <div class="err" id="billToErr" style="display:none"></div>
+    </div>
+
+    <div class="row">
+      <button class="btn btn-primary" id="runBtn" disabled>
+        <span id="runSpinner" class="spinner" style="display:none"></span>
+        <span>Check FMS / TMS POD</span>
+      </button>
+      <button class="btn btn-ghost" id="clearBtn">Clear</button>
+      <button class="btn btn-ghost" id="exportBtn" disabled>Export Results (.txt)</button>
+      <span class="muted" id="summaryLabel">0 PROs processed</span>
+    </div>
+
+    <div class="status-row">
+      <div class="muted" id="status">Idle</div>
+      <div class="muted" id="eta">Elapsed: 0s</div>
+    </div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div class="muted" id="counts">0/0</div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+      <strong>Results</strong>
+      <span class="muted">
+        <code>PRO: #### | FMS - POD... | TMS - POD...</code>
+      </span>
+    </div>
+    <pre id="out">No results yet.</pre>
+  </div>
+</div>
+
+<script>
+(() => {
+/* --- CONFIG --- */
+const FMS_BASE       = "https://fms.item.com";
+const FMS_COMPANY_ID = "SBFH";
+const FMS_CLIENT     = "FMS_WEB";
+const FMS_USERNAME   = "RaulEscobar";
+const FMS_PASSWORD   = "FMSoffload1!";
+const FMS_LOGIN_URL  = `${FMS_BASE}/fms-platform-user/Auth/Login`;
+const FMS_BILLTO_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/search-business-client`;
+const FMS_ORDERS_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
+const FMS_FILES_URL  = `${FMS_BASE}/fms-platform-order/files/`;
+
+const TMS_BASE       = "https://tms.freightapp.com";
+const TMS_LOGIN_URL  = `${TMS_BASE}/write/check_login.php`;
+const TMS_TRACE_URL  = `${TMS_BASE}/write_new/get_tms_trace.php`;
+const TMS_USERNAME   = "cmosqueda";
+const TMS_PASSWORD   = "UWF2NjUyODk=";
+
+const CONCURRENCY = 6;
+
+/* --- DOM --- */
+const $ = id => document.getElementById(id);
+
+const fmsDot = $("fmsDot");
+const tmsDot = $("tmsDot");
+const fmsAuthText = $("fmsAuthText");
+const tmsAuthText = $("tmsAuthText");
+
+const billToInput = $("billToInput");
+const billToList = $("billToList");
+const billToHelp = $("billToHelp");
+const billToErr = $("billToErr");
+
+const runBtn = $("runBtn");
+const runSpinner = $("runSpinner");
+const clearBtn = $("clearBtn");
+const exportBtn = $("exportBtn");
+
+const statusEl = $("status");
+const etaEl = $("eta");
+const fillEl = $("fill");
+const countsEl = $("counts");
+const outEl = $("out");
+const summaryEl = $("summaryLabel");
+
+/* --- STATE --- */
+let FMS_TOKEN = null;
+let TMS_USER_ID = null;
+let TMS_TOKEN = null;
+
+let selectedBillToCode = "";
+let selectedBillToName = "";
+
+/* --- HELPERS --- */
+function cleanPro(v){return String(v||"").trim();}
+function now(){return Date.now();}
+function fmtSeconds(sec){
+  sec=Math.max(0,Math.floor(sec));
+  const m=Math.floor(sec/60);
+  const s=sec%60;
+  return m?`${m}m ${String(s).padStart(2,"0")}s`:`${s}s`;
+}
+function setProgress(done,total,startTs){
+  const ratio = total?done/total:0;
+  fillEl.style.width = (ratio*100)+"%";
+  countsEl.textContent = `${done}/${total}`;
+  const elapsed=(Date.now()-startTs)/1000;
+  etaEl.textContent="Elapsed: "+fmtSeconds(elapsed);
+}
+function resetOutput(){
+  outEl.textContent = "No results yet.";
+  summaryEl.textContent = "0 PROs processed";
+  setProgress(0,0,now());
+  statusEl.textContent = "Idle";
+  etaEl.textContent = "Elapsed: 0s";
+}
+function line(msg){
+  if(outEl.textContent==="No results yet.") outEl.textContent="";
+  outEl.textContent += (outEl.textContent?"\n":"")+msg;
+}
+function setFmsAuth(ok){fmsDot.style.background=ok?"#22c55e":"#f97373"; fmsAuthText.textContent=ok?"FMS: Authenticated":"FMS: Not authenticated";}
+function setTmsAuth(ok){tmsDot.style.background=ok?"#22c55e":"#f97373"; tmsAuthText.textContent=ok?"TMS: Authenticated":"TMS: Not authenticated";}
+function showErr(el,msg){el.style.display="block"; el.textContent=msg;}
+function hideErr(el){el.style.display="none"; el.textContent="";}
+
+function debounce(fn,delay){
+  let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),delay);}
+}
+
+/* --- AUTH --- */
+async function authFMS(){
+  if(FMS_TOKEN) return FMS_TOKEN;
+  setFmsAuth(false);
+  const r=await fetch(FMS_LOGIN_URL,{
+    method:"POST",
+    headers:{ "fms-client":FMS_CLIENT,"Content-Type":"application/json" },
+    body:JSON.stringify({account:FMS_USERNAME,password:FMS_PASSWORD})
+  });
+  if(!r.ok) throw new Error("FMS Auth "+r.status);
+  const j=await r.json();
+  FMS_TOKEN=j.token||j?.data?.token||"";
+  if(!FMS_TOKEN) throw new Error("No FMS token");
+  setFmsAuth(true);
+  return FMS_TOKEN;
+}
+
+async function authTMS(){
+  if(TMS_USER_ID && TMS_TOKEN) return {userId:TMS_USER_ID, token:TMS_TOKEN};
+  setTmsAuth(false);
+  const form=new URLSearchParams({
+    username:TMS_USERNAME,password:TMS_PASSWORD,
+    UserID:"null",UserToken:"null",pageName:"/index.html"
+  });
+  const r=await fetch(TMS_LOGIN_URL,{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With":"XMLHttpRequest"
+    },
+    body:form
+  });
+  const j=await r.json();
+  TMS_USER_ID=j.UserID||j.user_id;
+  TMS_TOKEN=j.UserToken||j.user_token;
+  if(!TMS_USER_ID||!TMS_TOKEN) throw new Error("No TMS credentials");
+  setTmsAuth(true);
+  return {userId:TMS_USER_ID, token:TMS_TOKEN};
+}
+
+/* --- FMS SEARCH --- */
+async function searchBillToClients(q){
+  if(q.length<2) return [];
+  await authFMS();
+  const url=`${FMS_BILLTO_URL}?Code=${encodeURIComponent(q)}`;
+  const r=await fetch(url,{
+    headers:{
+      "accept":"application/json",
+      "fms-client":FMS_CLIENT,
+      "fms-token":FMS_TOKEN,
+      "company-id":FMS_COMPANY_ID,
+      "actual-operate-time":new Date().toISOString().slice(0,10)
+    }
+  });
+  const j=await r.json();
+  return (j?.data?.items||[]).map(i=>({code:i.code,name:i.print_name||i.code}));
+}
+
+async function getOrdersForBillTo(code){
+  await authFMS();
+  const payload={
+    bill_to_accounts:[code],
+    page_number:1,page_size:10000
+  };
+  const r=await fetch(FMS_ORDERS_URL,{
+    method:"POST",
+    headers:{
+      "fms-client":FMS_CLIENT,"fms-token":FMS_TOKEN,
+      "Content-Type":"application/json","Company-Id":FMS_COMPANY_ID
+    },
+    body:JSON.stringify(payload)
+  });
+  const j=await r.json();
+  return j?.data?.items||[];
+}
+
+async function checkPod(orderNo){
+  if(!orderNo) return false;
+  const r=await fetch(FMS_FILES_URL+encodeURIComponent(orderNo),{
+    headers:{
+      "accept":"application/json",
+      "fms-client":FMS_CLIENT,"fms-token":FMS_TOKEN,
+      "company-id":FMS_COMPANY_ID
+    }
+  });
+  const j=await r.json();
+  const files=j?.data?.items||[];
+  return files.some(f=>String(f.file_type).toUpperCase()==="POD");
+}
+
+async function fmsSearchPro(pro){
+  const payload={
+    tracking_nos:[pro],
+    page_number:1,page_size:50
+  };
+  const r=await fetch(FMS_ORDERS_URL,{
+    method:"POST",
+    headers:{
+      "fms-client":FMS_CLIENT,"fms-token":FMS_TOKEN,
+      "Content-Type":"application/json","Company-Id":FMS_COMPANY_ID
+    },
+    body:JSON.stringify(payload)
+  });
+  const j=await r.json();
+  const it=(j?.data?.items||[])[0];
+  if(!it) return {status:"No FMS record found",hasPod:false};
+  const pod=await checkPod(it.order_no);
+  return {
+    status:it.order_status||"N/A",
+    hasPod:pod
+  };
+}
+
+/* --- TMS SEARCH --- */
+function tmsPayloadBillTo(name,code,userId,token){
+  const p=new URLSearchParams();
+  p.set("input_filter_billto", name);
+  p.set("input_filter_billto_code", code);
+  p.set("input_stage_id","-4,-3,-2,-1,0,1,2,3,4");
+  p.set("input_page_num","1");
+  p.set("input_page_size","10000");
+  p.set("UserID",userId);
+  p.set("UserToken",token);
+  p.set("pageName","dashboardTmsTrace");
+  return p;
+}
+function tmsPayloadPro(pro,userId,token){
+  const p=tmsPayloadBillTo("","",userId,token);
+  p.set("input_filter_pro",pro);
+  return p;
+}
+
+async function tmsSearchBillTo(name,code,userId,token){
+  const body=tmsPayloadBillTo(name,code,userId,token);
+  const r=await fetch(TMS_TRACE_URL,{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With":"XMLHttpRequest"
+    },
+    body
+  });
+  const j=await r.json();
+  const rows=j?.data||j||[];
+  const map=new Map();
+  for(const rw of rows){
+    const pro=cleanPro(rw.tms_order_pro||rw.Pro||rw.pro||"");
+    if(!pro) continue;
+    const status=rw.StatusDesc||rw.Status||rw.status||"N/A";
+    const pod=String(rw.pod_image||"").toUpperCase()==="Y";
+    if(!map.has(pro)){
+      map.set(pro,{status,hasPod:pod});
+    }
+  }
+  return map;
+}
+
+async function tmsSearchPro(pro,userId,token){
+  const body=tmsPayloadPro(pro,userId,token);
+  const r=await fetch(TMS_TRACE_URL,{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With":"XMLHttpRequest"
+    },
+    body
+  });
+  const j=await r.json();
+  const rows=j?.data||j||[];
+  const rw=rows[0];
+  if(!rw) return {status:"No TMS record found",hasPod:false};
+  return {
+    status:rw.StatusDesc||rw.Status||rw.status||"N/A",
+    hasPod:String(rw.pod_image||"").toUpperCase()==="Y"
+  };
+}
+
+/* --- MAIN SEARCH --- */
+async function runSearch(){
+  if(!selectedBillToCode){
+    showErr(billToErr,"Select a Bill-To first.");
+    return;
+  }
+
+  resetOutput();
+  runBtn.disabled=true;
+  runSpinner.style.display="inline-block";
+  statusEl.textContent="Logging in…";
+
+  try{
+    await authFMS();
+    const {userId,token}=await authTMS();
+
+    statusEl.textContent="Searching FMS…";
+    const fmsItems=await getOrdersForBillTo(selectedBillToCode);
+    const fmsMap=new Map();
+    for(const it of fmsItems){
+      const pro=cleanPro(it.reference5||it.tracking_no||"");
+      if(!pro) continue;
+      const hasPod=await checkPod(it.order_no);
+      fmsMap.set(pro,{status:it.order_status||"N/A",hasPod});
+    }
+
+    statusEl.textContent="Searching TMS…";
+    const tmsMap=await tmsSearchBillTo(selectedBillToName,selectedBillToCode,userId,token);
+
+    const allPros=[...new Set([...fmsMap.keys(),...tmsMap.keys()])];
+    if(!allPros.length){
+      outEl.textContent=`No orders found for Bill-To ${selectedBillToName} (${selectedBillToCode}).`;
+      return;
+    }
+
+    statusEl.textContent="Cross-matching…";
+    const startTs=now();
+    let processed=0;
+
+    for(const pro of allPros){
+      let fms=fmsMap.get(pro);
+      let tms=tmsMap.get(pro);
+
+      if(!fms){ fms = await fmsSearchPro(pro); }
+      if(!tms){ tms = await tmsSearchPro(pro,userId,token); }
+
+      const fmsTxt=fms.hasPod?"POD found":"No POD";
+      const tmsTxt=tms.hasPod?"POD found":"No POD found";
+
+      line(`PRO: ${pro} | FMS - ${fmsTxt} | FMS Status - ${fms.status} | TMS - ${tmsTxt} | TMS Status - ${tms.status}`);
+      line(`---`);
+
+      processed++;
+      setProgress(processed,allPros.length,startTs);
+    }
+
+    summaryEl.textContent=`${processed} PROs processed`;
+    statusEl.textContent="Done.";
+    exportBtn.disabled=false;
+
+  }catch(e){
+    outEl.textContent="Error: "+e.message;
+    statusEl.textContent="Error";
+  }
+
+  runSpinner.style.display="none";
+  runBtn.disabled=false;
+}
+
+/* --- AUTOCOMPLETE --- */
+function clearSelection(){
+  selectedBillToCode="";
+  selectedBillToName="";
+  runBtn.disabled=true;
+}
+
+const debounced=debounce(async()=>{
+  hideErr(billToErr);
+  const q=billToInput.value.trim();
+  clearSelection();
+  if(q.length<2){
+    billToList.style.display="none";
+    billToHelp.textContent="Type 2+ chars.";
+    return;
+  }
+  billToHelp.textContent="Searching…";
+  const rows=await searchBillToClients(q);
+  billToList.innerHTML="";
+  if(!rows.length){
+    billToHelp.textContent="No results.";
+    billToList.style.display="none";
+    return;
+  }
+  for(const it of rows){
+    const div=document.createElement("div");
+    div.className="autocomplete-item";
+    div.innerHTML=`<div class="autocomplete-main">${it.name}</div>
+                   <div class="autocomplete-sub">${it.code}</div>`;
+    div.onclick=()=>{
+      selectedBillToName=it.name;
+      selectedBillToCode=it.code;
+      billToInput.value=`${it.name} (${it.code})`;
+      billToHelp.textContent=`Selected: ${it.name}.`;
+      billToList.style.display="none";
+      runBtn.disabled=false;
+    };
+    billToList.appendChild(div);
+  }
+  billToList.style.display="block";
+},300);
+
+billToInput.oninput=()=>debounced();
+document.addEventListener("click",e=>{
+  if(!billToList.contains(e.target)&&e.target!==billToInput){
+    billToList.style.display="none";
+  }
+});
+
+/* --- BUTTONS --- */
+runBtn.onclick=()=>runSearch();
+clearBtn.onclick=()=>{
+  billToInput.value="";
+  clearSelection();
+  billToList.style.display="none";
+  resetOutput();
+};
+exportBtn.onclick=()=>{
+  const blob=new Blob([outEl.textContent],{type:"text/plain"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="billto_pod_compare.txt";
+  a.click();
+};
+
+resetOutput();
+})();
+</script>
+</body>
+</html>
