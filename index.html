@@ -42,9 +42,16 @@
     padding:10px;border-radius:14px;font-size:14px;color:var(--text)
   }
   .autocomplete-list{
-    position:absolute;width:350px;background:#020617;border-radius:14px;
-    border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,.5);
-    max-height:200px;overflow:auto;display:none;z-index:20;
+    position:absolute;
+    width:350px;
+    background:#020617;
+    border-radius:14px;
+    border:1px solid var(--border);
+    box-shadow:0 10px 30px rgba(0,0,0,.5);
+    max-height:200px;
+    overflow:auto;
+    display:none;
+    z-index:9999; /* FIXED */
   }
   .autocomplete-item{padding:10px;cursor:pointer}
   .autocomplete-item:hover{background:#111827}
@@ -369,3 +376,4 @@ $("exportBtn").addEventListener("click", ()=>{
 
 </body>
 </html>
+
