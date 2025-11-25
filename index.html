@@ -275,7 +275,7 @@ async function authTMS(){
     method:"POST",
     headers:{
       "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With":"XMLHttpRequest"
+      "Accept": "application/json, text/javascript, */*; q=0.01"
     },
     body:form
   });
@@ -384,8 +384,8 @@ async function tmsSearchBillTo(name,code,userId,token){
   const r=await fetch(TMS_TRACE_URL,{
     method:"POST",
     headers:{
-      "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With":"XMLHttpRequest"
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "Accept": "application/json, text/javascript, */*; q=0.01"
     },
     body
   });
@@ -409,8 +409,7 @@ async function tmsSearchPro(pro,userId,token){
   const r=await fetch(TMS_TRACE_URL,{
     method:"POST",
     headers:{
-      "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With":"XMLHttpRequest"
+      "Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"
     },
     body
   });
@@ -562,4 +561,5 @@ resetOutput();
 })();
 </script>
 </body>
+
 </html>
