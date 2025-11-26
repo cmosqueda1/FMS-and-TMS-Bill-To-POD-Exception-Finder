@@ -532,6 +532,7 @@
         const orderNo =
           ord.order_no || ord.shipment_order_no || ord.shipmentOrderNo || ord.shipment_no || "";
 
+        // tracking_no is the authoritative PRO for FMS
         const pro =
           ord.tracking_no || ord.tracking || ord.customer_pro || ord.pro || "";
 
@@ -623,9 +624,8 @@
         };
 
         tmsProcessed++;
-        if (tmsProcessed % 10 === 0 || tmsProcessed === totalTmsOrders){
-          setProgressTms(tmsProcessed,totalTmsOrders);
-        }
+        // update every row for smoother animation
+        setProgressTms(tmsProcessed,totalTmsOrders);
       }
 
       stopTmsTimer();
@@ -672,7 +672,17 @@
       sortProArr(groupFmsOnly);
       sortProArr(groupTmsOnly);
 
-      const podExceptionCount = groupBoth.length + groupFmsOnly.length + groupTmsOnly.length;
+      const podExceptionCount = allExceptionPros.length;
+
+      // per-system exception counts (Exception = Y only)
+      let fmsExceptionCount = 0;
+      let tmsExceptionCount = 0;
+      for (const pro of allExceptionPros){
+        const f = fmsByPro[pro];
+        const t = tmsByPro[pro];
+        if (f && f.hasPod) fmsExceptionCount++;
+        if (t && t.podFound) tmsExceptionCount++;
+      }
 
       // compute widths for alignment using all exception pros
       let maxProLen=0,maxFmsOrderLen=0,maxTmsOrderIdLen=0;
@@ -692,13 +702,14 @@
         const proPad = padRight(pro,maxProLen);
 
         if (where==="both"){
-          // FMS line (may have or not)
+          // FMS line
           if (f && f.hasPod){
             const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
             lines.push(
               `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
             );
           } else if (f){
+            // FMS order exists but no POD
             lines.push(`FMS: Exception: N | ${proPad}`);
           } else {
             lines.push(`FMS: Exception: N | ${proPad}`);
@@ -752,15 +763,19 @@
       headerLines.push(`Bill-To: ${selectedBillTo.name} (${selectedBillTo.code})`);
       headerLines.push(`Total Non-Delivered Orders Checked (FMS): ${totalFmsOrders}`);
       headerLines.push(`Total Non-Delivered Orders Checked (TMS): ${tmsRows.length}`);
-      headerLines.push(`POD Exceptions Found (FMS/TMS): ${podExceptionCount}`);
+      headerLines.push(
+        `POD Exceptions Found (FMS/TMS): ${podExceptionCount} | FMS: ${fmsExceptionCount} / TMS: ${tmsExceptionCount}`
+      );
       headerLines.push(`------------------------------------------------------------`);
 
-      const allLines = headerLines.concat(blocks.length ? blocks.join("\n---\n") : []);
+      const bodyText = blocks.length ? blocks.join("\n---\n") : "";
+      const allLines = headerLines.concat(bodyText ? [bodyText] : []);
       output.textContent = allLines.join("\n");
 
       // 6) BUILD CSV (EXCEPTIONS ONLY)
       const csv = [];
-      csv.push("System,Pro,OrderID/Num,Stage/Status,POD");
+      // requested exact header casing
+      csv.push("System,pro,orderid/num,stage/status,pod");
 
       function csvEscape(v){
         const s = String(v ?? "");
