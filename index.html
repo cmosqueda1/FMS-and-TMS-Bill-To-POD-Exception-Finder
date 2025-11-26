@@ -178,6 +178,11 @@
   .progress-wrap{
     margin-top:14px;
   }
+  .progress-title{
+    font-size:11px;
+    color:var(--muted);
+    margin-bottom:4px;
+  }
   .progress-track{
     width:100%;
     height:8px;
@@ -192,10 +197,18 @@
     background:linear-gradient(90deg,var(--accent2),var(--accent));
     transition:width .15s linear;
   }
-  .progress-label{
+  .progress-bar-tms{
+    height:100%;
+    width:0%;
+    background:linear-gradient(90deg,#22c55e,#06b6d4);
+    transition:width .15s linear;
+  }
+  .progress-footer{
     margin-top:4px;
     font-size:11px;
     color:var(--muted);
+    display:flex;
+    justify-content:space-between;
   }
 
   pre{
@@ -248,15 +261,31 @@
 
       <div class="run-meta">
         <span id="runStatus" class="run-status">Idle.</span>
-        <span id="elapsedLabel">Elapsed: 0.0s</span>
       </div>
     </div>
 
+    <!-- FMS progress -->
     <div class="progress-wrap">
+      <div class="progress-title">FMS Orders</div>
       <div class="progress-track">
-        <div id="progressBar" class="progress-bar"></div>
+        <div id="progressBarFms" class="progress-bar"></div>
       </div>
-      <div id="progressLabel" class="progress-label">0/0</div>
+      <div class="progress-footer">
+        <span id="progressLabelFms">0/0</span>
+        <span id="elapsedLabelFms">Elapsed: 0.0s</span>
+      </div>
+    </div>
+
+    <!-- TMS progress -->
+    <div class="progress-wrap">
+      <div class="progress-title">TMS Orders</div>
+      <div class="progress-track">
+        <div id="progressBarTms" class="progress-bar-tms"></div>
+      </div>
+      <div class="progress-footer">
+        <span id="progressLabelTms">0/0</span>
+        <span id="elapsedLabelTms">Elapsed: 0.0s</span>
+      </div>
     </div>
   </div>
 
@@ -273,44 +302,77 @@
 
 <script>
   // ----- GLOBAL -----
-  const billToInput  = document.getElementById("billToInput");
-  const billToList   = document.getElementById("billToList");
-  const billToMeta   = document.getElementById("billToMeta");
-  const runBtn       = document.getElementById("runBtn");
-  const exportBtn    = document.getElementById("exportBtn");
-  const output       = document.getElementById("output");
-  const progressBar  = document.getElementById("progressBar");
-  const progressLabel= document.getElementById("progressLabel");
-  const runStatusEl  = document.getElementById("runStatus");
-  const elapsedLabel = document.getElementById("elapsedLabel");
+  const billToInput   = document.getElementById("billToInput");
+  const billToList    = document.getElementById("billToList");
+  const billToMeta    = document.getElementById("billToMeta");
+  const runBtn        = document.getElementById("runBtn");
+  const exportBtn     = document.getElementById("exportBtn");
+  const output        = document.getElementById("output");
+  const runStatusEl   = document.getElementById("runStatus");
+
+  const progressBarFms   = document.getElementById("progressBarFms");
+  const progressLabelFms = document.getElementById("progressLabelFms");
+  const elapsedLabelFms  = document.getElementById("elapsedLabelFms");
+
+  const progressBarTms   = document.getElementById("progressBarTms");
+  const progressLabelTms = document.getElementById("progressLabelTms");
+  const elapsedLabelTms  = document.getElementById("elapsedLabelTms");
 
   let selectedBillTo = null;
   let isRunning = false;
-  let timerStart = 0;
-  let timerHandle = null;
   let lastResultsCSV = "";
+
+  let fmsTimerStart = 0;
+  let fmsTimerHandle = null;
+  let tmsTimerStart = 0;
+  let tmsTimerHandle = null;
 
   function debounce(fn,delay){
     let t;
     return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args),delay); };
   }
   function setRunStatus(t){ runStatusEl.textContent=t; }
-  function setProgress(done,total){
+
+  function setProgressFms(done,total){
     const pct = total>0 ? (done/total)*100 : 0;
-    progressBar.style.width = pct+"%";
-    progressLabel.textContent = `${done}/${total}`;
+    progressBarFms.style.width = pct+"%";
+    progressLabelFms.textContent = `${done}/${total}`;
   }
-  function startTimer(){
-    timerStart = performance.now();
-    if (timerHandle) clearInterval(timerHandle);
-    timerHandle=setInterval(()=>{
-      elapsedLabel.textContent = `Elapsed: ${((performance.now()-timerStart)/1000).toFixed(1)}s`;
+  function setProgressTms(done,total){
+    const pct = total>0 ? (done/total)*100 : 0;
+    progressBarTms.style.width = pct+"%";
+    progressLabelTms.textContent = `${done}/${total}`;
+  }
+
+  function startFmsTimer(){
+    fmsTimerStart = performance.now();
+    if (fmsTimerHandle) clearInterval(fmsTimerHandle);
+    fmsTimerHandle = setInterval(()=>{
+      const sec = ((performance.now()-fmsTimerStart)/1000).toFixed(1);
+      elapsedLabelFms.textContent = `Elapsed: ${sec}s`;
     },200);
   }
-  function stopTimer(){
-    clearInterval(timerHandle);
-    timerHandle=null;
+  function stopFmsTimer(){
+    if (fmsTimerHandle){
+      clearInterval(fmsTimerHandle);
+      fmsTimerHandle=null;
+    }
   }
+  function startTmsTimer(){
+    tmsTimerStart = performance.now();
+    if (tmsTimerHandle) clearInterval(tmsTimerHandle);
+    tmsTimerHandle = setInterval(()=>{
+      const sec = ((performance.now()-tmsTimerStart)/1000).toFixed(1);
+      elapsedLabelTms.textContent = `Elapsed: ${sec}s`;
+    },200);
+  }
+  function stopTmsTimer(){
+    if (tmsTimerHandle){
+      clearInterval(tmsTimerHandle);
+      tmsTimerHandle=null;
+    }
+  }
+
   function clearAll(){
     billToInput.value="";
     billToList.innerHTML="";
@@ -320,9 +382,13 @@
     exportBtn.disabled=true;
     output.textContent="No results yet.";
     setRunStatus("Idle.");
-    elapsedLabel.textContent="Elapsed: 0.0s";
-    setProgress(0,0);
+    setProgressFms(0,0);
+    setProgressTms(0,0);
+    elapsedLabelFms.textContent="Elapsed: 0.0s";
+    elapsedLabelTms.textContent="Elapsed: 0.0s";
     lastResultsCSV = "";
+    stopFmsTimer();
+    stopTmsTimer();
   }
 
   // ----- AUTOCOMPLETE (FMS Bill-To) -----
@@ -404,10 +470,16 @@
     runBtn.disabled=true;
     exportBtn.disabled=true;
     output.textContent="";
-    setRunStatus("Querying FMS orders…");
-    startTimer();
-    setProgress(0,0);
     lastResultsCSV = "";
+
+    setRunStatus("Querying FMS orders…");
+    setProgressFms(0,0);
+    setProgressTms(0,0);
+    elapsedLabelFms.textContent="Elapsed: 0.0s";
+    elapsedLabelTms.textContent="Elapsed: 0.0s";
+    stopFmsTimer();
+    stopTmsTimer();
+    startFmsTimer();
 
     try{
       // 1) FMS SEARCH: non-delivered orders by Bill-To
@@ -441,16 +513,18 @@
       const totalFmsOrders = orders.length;
 
       if (!totalFmsOrders){
+        stopFmsTimer();
+        setProgressFms(0,0);
         output.textContent="No non-delivered FMS orders found.";
-        stopTimer();
+        setRunStatus("Done.");
         isRunning=false;
+        runBtn.disabled=false;
         return;
       }
 
-      // 2) FMS POD CHECK PER ORDER
-      setRunStatus(`Checking FMS POD files (${totalFmsOrders})…`);
-      setProgress(0,totalFmsOrders);
+      setProgressFms(0,totalFmsOrders);
 
+      // 2) FMS POD CHECK PER ORDER
       const fmsByPro = {};
       let processed = 0;
 
@@ -461,7 +535,7 @@
         const pro =
           ord.tracking_no || ord.tracking || ord.customer_pro || ord.pro || "";
 
-        const proKey = pro || ""; // may be empty; we will skip if no PRO later
+        const proKey = pro || "";
 
         let statusName =
           ord.status_name || ord.status_desc || ord.order_status || ord.status || "Unknown";
@@ -502,12 +576,15 @@
 
         processed++;
         if (processed % 5 === 0 || processed === totalFmsOrders){
-          setProgress(processed,totalFmsOrders);
+          setProgressFms(processed,totalFmsOrders);
         }
       }
 
+      stopFmsTimer();
+
       // 3) TMS TRACE BY BILL-TO NAME
       setRunStatus("Querying TMS trace by Bill-To…");
+      startTmsTimer();
 
       const tmsResp = await fetch("/api/tms",{
         method:"POST",
@@ -520,11 +597,18 @@
 
       const tmsJson = await tmsResp.json();
       const tmsRows = tmsJson?.rows || [];
+      const totalTmsOrders = tmsRows.length;
+
+      setProgressTms(0,totalTmsOrders);
+
       const tmsByPro = {};
+      let tmsProcessed = 0;
 
       for (const row of tmsRows){
         const pro = row.tms_order_pro || row.tms_order_load_no || "";
-        if (!pro) continue;
+        if (!pro){
+          continue;
+        }
 
         const orderId = row.tms_order_id || row.shipment_id || "";
         const stage = row.tms_order_stage || "";
@@ -537,91 +621,142 @@
           podFound,
           exception: podFound ? "Y" : "N"
         };
+
+        tmsProcessed++;
+        if (tmsProcessed % 10 === 0 || tmsProcessed === totalTmsOrders){
+          setProgressTms(tmsProcessed,totalTmsOrders);
+        }
       }
 
-      // 4) MERGE FMS + TMS BY PRO, ONLY EXCEPTIONS
-      setRunStatus("Merging FMS/TMS results…");
+      stopTmsTimer();
 
-      const allPros = new Set([
-        ...Object.keys(fmsByPro),
-        ...Object.keys(tmsByPro)
-      ]);
+      // 4) BUILD SET OF PROs THAT ARE TRUE EXCEPTIONS (POD in at least one system)
+      const prosWithException = new Set();
 
-      // Only keep PROs where FMS or TMS has a POD (exception Y in that system)
-      const interestingPros = [...allPros].filter(pro=>{
-        const f = fmsByPro[pro];
-        const t = tmsByPro[pro];
-        return (f && f.hasPod) || (t && t.podFound);
-      });
+      for (const [pro,f] of Object.entries(fmsByPro)){
+        if (f.hasPod) prosWithException.add(pro);
+      }
+      for (const [pro,t] of Object.entries(tmsByPro)){
+        if (t.podFound) prosWithException.add(pro);
+      }
 
-      interestingPros.sort((a,b)=>{
-        // numeric sort if possible
-        const na = Number(a), nb = Number(b);
-        if (!Number.isNaN(na) && !Number.isNaN(nb)) return na-nb;
-        return a.localeCompare(b);
-      });
+      const allExceptionPros = [...prosWithException];
 
-      const podExceptionCount = interestingPros.length;
+      // partition into 3 groups based on presence in systems
+      const groupBoth = [];
+      const groupFmsOnly = [];
+      const groupTmsOnly = [];
 
-      // compute widths for alignment
-      let maxProLen = 0;
-      let maxFmsOrderLen = 0;
-      let maxTmsOrderIdLen = 0;
-
-      for (const pro of interestingPros){
+      for (const pro of allExceptionPros){
         const f = fmsByPro[pro];
         const t = tmsByPro[pro];
 
+        if (f && t){
+          groupBoth.push(pro);
+        } else if (f && !t){
+          groupFmsOnly.push(pro);
+        } else if (!f && t){
+          groupTmsOnly.push(pro);
+        }
+      }
+
+      // sort each group by PRO (numeric if possible)
+      function sortProArr(arr){
+        arr.sort((a,b)=>{
+          const na = Number(a), nb = Number(b);
+          if (!Number.isNaN(na) && !Number.isNaN(nb)) return na-nb;
+          return a.localeCompare(b);
+        });
+      }
+      sortProArr(groupBoth);
+      sortProArr(groupFmsOnly);
+      sortProArr(groupTmsOnly);
+
+      const podExceptionCount = groupBoth.length + groupFmsOnly.length + groupTmsOnly.length;
+
+      // compute widths for alignment using all exception pros
+      let maxProLen=0,maxFmsOrderLen=0,maxTmsOrderIdLen=0;
+
+      for (const pro of allExceptionPros){
         if (pro.length > maxProLen) maxProLen = pro.length;
-        if (f && f.orderNo && f.orderNo.length > maxFmsOrderLen) maxFmsOrderLen = f.orderNo.length;
-        if (t && t.tmsOrderId && t.tmsOrderId.length > maxTmsOrderIdLen) maxTmsOrderIdLen = t.tmsOrderId.length;
+        const f=fmsByPro[pro];
+        const t=tmsByPro[pro];
+        if (f && f.orderNo && f.orderNo.length>maxFmsOrderLen) maxFmsOrderLen=f.orderNo.length;
+        if (t && t.tmsOrderId && t.tmsOrderId.length>maxTmsOrderIdLen) maxTmsOrderIdLen=t.tmsOrderId.length;
       }
 
-      // 5) BUILD TEXT OUTPUT
-      const lines = [];
-      lines.push(`Bill-To: ${selectedBillTo.name} (${selectedBillTo.code})`);
-      lines.push(`Total Non-Delivered Orders Checked (FMS): ${totalFmsOrders}`);
-      lines.push(`POD Exceptions Found (FMS/TMS): ${podExceptionCount}`);
-      lines.push(`------------------------------------------------------------`);
+      function buildBlock(pro, where){
+        const lines=[];
+        const f=fmsByPro[pro];
+        const t=tmsByPro[pro];
+        const proPad = padRight(pro,maxProLen);
 
-      for (const pro of interestingPros){
-        const f = fmsByPro[pro];
-        const t = tmsByPro[pro];
+        if (where==="both"){
+          // FMS line (may have or not)
+          if (f && f.hasPod){
+            const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
+            lines.push(
+              `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
+            );
+          } else if (f){
+            lines.push(`FMS: Exception: N | ${proPad}`);
+          } else {
+            lines.push(`FMS: Exception: N | ${proPad}`);
+          }
 
-        const proPad = padRight(pro, maxProLen);
-
-        // FMS line
-        if (f && f.hasPod){
-          const doPad  = padRight(f.orderNo || "", maxFmsOrderLen);
-          const fmsLine =
-            `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`;
-          lines.push(fmsLine);
-        } else if (f){
-          const fmsLine = `FMS: Exception: N | ${proPad}`;
-          lines.push(fmsLine);
-        } else {
-          const fmsLine = `FMS: Exception: N | ${proPad}`;
-          lines.push(fmsLine);
+          // TMS line
+          if (t){
+            const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
+            const stageText = t.stage || "Unknown";
+            const base = `TMS: Exception: ${t.exception} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
+            lines.push(t.podFound ? `${base} | POD Found` : `${base} | No POD`);
+          } else {
+            lines.push(`TMS: Exception: N | ${proPad}`);
+          }
         }
-
-        // TMS line
-        if (t){
-          const idPad = padRight(t.tmsOrderId || "", maxTmsOrderIdLen);
+        else if (where==="fmsOnly"){
+          const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
+          lines.push(
+            `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
+          );
+          lines.push(`TMS: Exception: N | ${proPad}`);
+        }
+        else if (where==="tmsOnly"){
+          const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
           const stageText = t.stage || "Unknown";
-          const base = `TMS: Exception: ${t.exception} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
-          const tmsLine = t.podFound
-            ? `${base} | POD Found`
-            : `${base} | No POD`;
-          lines.push(tmsLine);
-        } else {
-          const tmsLine = `TMS: Exception: N | ${proPad}`;
-          lines.push(tmsLine);
+          lines.push(`FMS: Exception: N | ${proPad}`);
+          const base = `TMS: Exception: Y | ${proPad} -> ${idPad} | Stage: ${stageText}`;
+          lines.push(`${base} | POD Found`);
         }
 
-        lines.push(`---`);
+        return lines.join("\n");
       }
 
-      output.textContent = lines.join("\n");
+      // 5) BUILD TEXT OUTPUT (GROUPED)
+      const blocks=[];
+
+      // group 1: both systems have same PRO (at least one POD)
+      for (const pro of groupBoth){
+        blocks.push(buildBlock(pro,"both"));
+      }
+      // group 2: only FMS has PRO (with POD)
+      for (const pro of groupFmsOnly){
+        blocks.push(buildBlock(pro,"fmsOnly"));
+      }
+      // group 3: only TMS has PRO (with POD)
+      for (const pro of groupTmsOnly){
+        blocks.push(buildBlock(pro,"tmsOnly"));
+      }
+
+      const headerLines=[];
+      headerLines.push(`Bill-To: ${selectedBillTo.name} (${selectedBillTo.code})`);
+      headerLines.push(`Total Non-Delivered Orders Checked (FMS): ${totalFmsOrders}`);
+      headerLines.push(`Total Non-Delivered Orders Checked (TMS): ${tmsRows.length}`);
+      headerLines.push(`POD Exceptions Found (FMS/TMS): ${podExceptionCount}`);
+      headerLines.push(`------------------------------------------------------------`);
+
+      const allLines = headerLines.concat(blocks.length ? blocks.join("\n---\n") : []);
+      output.textContent = allLines.join("\n");
 
       // 6) BUILD CSV (EXCEPTIONS ONLY)
       const csv = [];
@@ -635,7 +770,7 @@
         return s;
       }
 
-      for (const pro of interestingPros){
+      for (const pro of groupBoth.concat(groupFmsOnly, groupTmsOnly)){
         const f = fmsByPro[pro];
         const t = tmsByPro[pro];
 
@@ -668,10 +803,11 @@
     catch(err){
       console.error(err);
       setRunStatus("Error");
-      output.textContent="Error: "+err.message;
+      output.textContent="Error: "+(err.message || String(err));
+      stopFmsTimer();
+      stopTmsTimer();
     }
     finally{
-      stopTimer();
       isRunning=false;
       if (selectedBillTo) runBtn.disabled=false;
     }
