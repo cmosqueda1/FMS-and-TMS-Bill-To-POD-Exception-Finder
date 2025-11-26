@@ -391,7 +391,7 @@
     stopTmsTimer();
   }
 
-  // ----- AUTOCOMPLETE -----
+  // ----- AUTOCOMPLETE (FMS Bill-To) -----
   document.addEventListener("click",e=>{
     if (!billToList.contains(e.target) && e.target!==billToInput)
       billToList.style.display="none";
@@ -412,7 +412,10 @@
       const resp = await fetch("/api/fms",{
         method:"POST",
         headers:{ "Content-Type":"application/json" },
-        body:JSON.stringify({ action:"searchBillTo", payload:{ code:q } })
+        body:JSON.stringify({
+          action:"searchBillTo",
+          payload:{ code:q }
+        })
       });
 
       const data = await resp.json();
@@ -452,14 +455,14 @@
 
   billToInput.addEventListener("input",debouncedBillTo);
 
-  // ----- UTIL -----
+  // ----- UTIL FOR TEXT ALIGNMENT -----
   function padRight(str, width){
     str = String(str ?? "");
     if (str.length >= width) return str;
     return str + " ".repeat(width - str.length);
   }
 
-  // ----- MAIN LOGIC -----
+  // ----- MAIN FMS + TMS POD LOGIC -----
   async function runPodExceptions(){
     if (!selectedBillTo || isRunning) return;
 
@@ -479,7 +482,7 @@
     startFmsTimer();
 
     try{
-      // 1) FMS ORDERS
+      // 1) FMS SEARCH: non-delivered orders by Bill-To
       const body={
         order_nos:[],tracking_nos:[],customer_references:[],bols:[],
         bill_to_accounts:[selectedBillTo.code],
@@ -521,60 +524,89 @@
 
       setProgressFms(0,totalFmsOrders);
 
-      // 2) FMS POD
+      // 2) FMS POD CHECK PER ORDER — OPTIMIZED (15 parallel requests)
       const fmsByPro = {};
       let processed = 0;
 
-      for (const ord of orders){
-        const orderNo =
-          ord.order_no || ord.shipment_order_no || ord.shipmentOrderNo || ord.shipment_no || "";
-        const pro =
-          ord.tracking_no || ord.tracking || ord.customer_pro || ord.pro || "";
-        const proKey = pro || "";
+      const CONCURRENCY_LIMIT = 15;
+      let currentIndex = 0;
 
-        let statusName =
-          ord.status_name || ord.status_desc || ord.order_status || ord.status || "Unknown";
-
-        let podCount = 0;
-        let hasPod = false;
-
-        if (orderNo){
-          const filesResp = await fetch("/api/fms",{
+      async function getPodInfo(orderNo){
+        try{
+          const resp = await fetch("/api/fms",{
             method:"POST",
             headers:{ "Content-Type":"application/json" },
-            body:JSON.stringify({ action:"files", payload:{ orderNo } })
+            body:JSON.stringify({
+              action:"files",
+              payload:{ orderNo }
+            })
           });
-
-          const filesJson = await filesResp.json();
+          const filesJson = await resp.json();
           const fileArr = Array.isArray(filesJson?.data)
             ? filesJson.data
             : (Array.isArray(filesJson?.data?.items) ? filesJson.data.items : []);
-
           const podFiles = fileArr.filter(f => f.file_type === "POD");
-          podCount = podFiles.length;
-          hasPod = podCount > 0;
-        }
-
-        if (proKey){
-          fmsByPro[proKey] = {
-            pro: proKey,
-            orderNo,
-            statusName,
-            podCount,
-            hasPod,
-            exception: hasPod ? "Y" : "N"
-          };
-        }
-
-        processed++;
-        if (processed % 5 === 0 || processed === totalFmsOrders){
-          setProgressFms(processed,totalFmsOrders);
+          return podFiles.length;
+        }catch(e){
+          console.error("FMS files error for", orderNo, e);
+          return 0;
         }
       }
 
+      async function fmsWorker(){
+        while (true){
+          let idx;
+          // claim next index
+          if (currentIndex >= orders.length) break;
+          idx = currentIndex++;
+          const ord = orders[idx];
+
+          const orderNo =
+            ord.order_no || ord.shipment_order_no || ord.shipmentOrderNo || ord.shipment_no || "";
+
+          const pro =
+            ord.tracking_no || ord.tracking || ord.customer_pro || ord.pro || "";
+
+          const proKey = pro || "";
+
+          let statusName =
+            ord.status_name || ord.status_desc || ord.order_status || ord.status || "Unknown";
+
+          let podCount = 0;
+          let hasPod = false;
+
+          if (orderNo){
+            podCount = await getPodInfo(orderNo);
+            hasPod = podCount > 0;
+          }
+
+          if (proKey){
+            fmsByPro[proKey] = {
+              pro: proKey,
+              orderNo,
+              statusName,
+              podCount,
+              hasPod,
+              exception: hasPod ? "Y" : "N"
+            };
+          }
+
+          processed++;
+          if (processed % 5 === 0 || processed === totalFmsOrders){
+            setProgressFms(processed,totalFmsOrders);
+          }
+        }
+      }
+
+      const workers = [];
+      for (let i=0;i<CONCURRENCY_LIMIT;i++){
+        workers.push(fmsWorker());
+      }
+      await Promise.all(workers);
+
       stopFmsTimer();
 
-      // 3) TMS TRACE
+      // 3) TMS TRACE BY BILL-TO NAME
       setRunStatus("Querying TMS trace by Bill-To…");
       startTmsTimer();
 
@@ -590,16 +622,15 @@
       const tmsJson = await tmsResp.json();
       let tmsRows = tmsJson?.rows || [];
 
-      // BEFORE FILTER — UI info only
+      // Total before filter (not shown, but could be logged if needed)
       const totalTmsBeforeFilter = tmsRows.length;
 
-      // FILTER OUT "DELIVERY COMPLETE"
+      // Filter out "Delivery Complete" stages
       tmsRows = tmsRows.filter(r=>{
         const stage = String(r.tms_order_stage || "").trim().toLowerCase();
         return stage !== "delivery complete";
       });
 
-      // AFTER FILTER
       const totalTmsFiltered = tmsRows.length;
       setProgressTms(0,totalTmsFiltered);
 
@@ -628,8 +659,9 @@
 
       stopTmsTimer();
 
-      // 4) BUILD EXCEPTIONS
+      // 4) BUILD SET OF PROs THAT ARE TRUE EXCEPTIONS (POD in at least one system)
       const prosWithException = new Set();
+
       for (const [pro,f] of Object.entries(fmsByPro)){
         if (f.hasPod) prosWithException.add(pro);
       }
@@ -639,6 +671,7 @@
 
       const allExceptionPros = [...prosWithException];
 
+      // partition into 3 groups based on presence in systems
       const groupBoth = [];
       const groupFmsOnly = [];
       const groupTmsOnly = [];
@@ -647,11 +680,16 @@
         const f = fmsByPro[pro];
         const t = tmsByPro[pro];
 
-        if (f && t) groupBoth.push(pro);
-        else if (f) groupFmsOnly.push(pro);
-        else groupTmsOnly.push(pro);
+        if (f && t){
+          groupBoth.push(pro);
+        } else if (f && !t){
+          groupFmsOnly.push(pro);
+        } else if (!f && t){
+          groupTmsOnly.push(pro);
+        }
       }
 
+      // sort each group by PRO (numeric if possible)
       function sortProArr(arr){
         arr.sort((a,b)=>{
           const na = Number(a), nb = Number(b);
@@ -665,22 +703,25 @@
 
       const podExceptionCount = allExceptionPros.length;
 
+      // per-system exception counts (Exception = Y only)
       let fmsExceptionCount = 0;
       let tmsExceptionCount = 0;
-
       for (const pro of allExceptionPros){
-        if (fmsByPro[pro]?.hasPod) fmsExceptionCount++;
-        if (tmsByPro[pro]?.podFound) tmsExceptionCount++;
+        const f = fmsByPro[pro];
+        const t = tmsByPro[pro];
+        if (f && f.hasPod) fmsExceptionCount++;
+        if (t && t.podFound) tmsExceptionCount++;
       }
 
+      // compute widths for alignment using all exception pros
       let maxProLen=0,maxFmsOrderLen=0,maxTmsOrderIdLen=0;
 
       for (const pro of allExceptionPros){
         if (pro.length > maxProLen) maxProLen = pro.length;
         const f=fmsByPro[pro];
         const t=tmsByPro[pro];
-        if (f?.orderNo?.length > maxFmsOrderLen) maxFmsOrderLen = f.orderNo.length;
-        if (t?.tmsOrderId?.length > maxTmsOrderIdLen) maxTmsOrderIdLen = t.tmsOrderId.length;
+        if (f && f.orderNo && f.orderNo.length>maxFmsOrderLen) maxFmsOrderLen=f.orderNo.length;
+        if (t && t.tmsOrderId && t.tmsOrderId.length>maxTmsOrderIdLen) maxTmsOrderIdLen=t.tmsOrderId.length;
       }
 
       function buildBlock(pro, where){
@@ -690,61 +731,93 @@
         const proPad = padRight(pro,maxProLen);
 
         if (where==="both"){
-          if (f?.hasPod){
-            lines.push(`FMS: Exception: Y | ${proPad} -> ${padRight(f.orderNo,maxFmsOrderLen)} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`);
-          } else lines.push(`FMS: Exception: N | ${proPad}`);
+          // FMS line
+          if (f && f.hasPod){
+            const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
+            lines.push(
+              `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
+            );
+          } else if (f){
+            lines.push(`FMS: Exception: N | ${proPad}`);
+          } else {
+            lines.push(`FMS: Exception: N | ${proPad}`);
+          }
 
+          // TMS line
           if (t){
             const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
-            const base = `TMS: Exception: ${t.exception} | ${proPad} -> ${idPad} | Stage: ${t.stage || "Unknown"}`;
+            const stageText = t.stage || "Unknown";
+            const base = `TMS: Exception: ${t.exception} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
             lines.push(t.podFound ? `${base} | POD Found` : `${base} | No POD`);
-          } else lines.push(`TMS: Exception: N | ${proPad}`);
+          } else {
+            lines.push(`TMS: Exception: N | ${proPad}`);
+          }
         }
         else if (where==="fmsOnly"){
-          lines.push(`FMS: Exception: Y | ${proPad} -> ${padRight(f.orderNo,maxFmsOrderLen)} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`);
+          const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
+          lines.push(
+            `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
+          );
           lines.push(`TMS: Exception: N | ${proPad}`);
         }
         else if (where==="tmsOnly"){
           const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
-          const base = `TMS: Exception: Y | ${proPad} -> ${idPad} | Stage: ${t.stage || "Unknown"}`;
+          const stageText = t.stage || "Unknown";
           lines.push(`FMS: Exception: N | ${proPad}`);
+          const base = `TMS: Exception: Y | ${proPad} -> ${idPad} | Stage: ${stageText}`;
           lines.push(`${base} | POD Found`);
         }
 
         return lines.join("\n");
       }
 
+      // 5) BUILD TEXT OUTPUT (GROUPED)
       const blocks=[];
-      groupBoth.forEach(pro=>blocks.push(buildBlock(pro,"both")));
-      groupFmsOnly.forEach(pro=>blocks.push(buildBlock(pro,"fmsOnly")));
-      groupTmsOnly.forEach(pro=>blocks.push(buildBlock(pro,"tmsOnly")));
+
+      // group 1: both systems have same PRO (at least one POD)
+      for (const pro of groupBoth){
+        blocks.push(buildBlock(pro,"both"));
+      }
+      // group 2: only FMS has PRO (with POD)
+      for (const pro of groupFmsOnly){
+        blocks.push(buildBlock(pro,"fmsOnly"));
+      }
+      // group 3: only TMS has PRO (with POD)
+      for (const pro of groupTmsOnly){
+        blocks.push(buildBlock(pro,"tmsOnly"));
+      }
 
       const headerLines=[];
       headerLines.push(`Bill-To: ${selectedBillTo.name} (${selectedBillTo.code})`);
       headerLines.push(`Total Non-Delivered Orders Checked (FMS): ${totalFmsOrders}`);
       headerLines.push(`Total Non-Delivered Orders Checked (TMS): ${totalTmsFiltered}`);
-      headerLines.push(`POD Exceptions Found (FMS/TMS): ${podExceptionCount} | FMS: ${fmsExceptionCount} / TMS: ${tmsExceptionCount}`);
+      headerLines.push(
+        `POD Exceptions Found (FMS/TMS): ${podExceptionCount} | FMS: ${fmsExceptionCount} / TMS: ${tmsExceptionCount}`
+      );
       headerLines.push(`------------------------------------------------------------`);
 
       const bodyText = blocks.length ? blocks.join("\n---\n") : "";
-      output.textContent = [...headerLines, bodyText].join("\n");
+      const allLines = headerLines.concat(bodyText ? [bodyText] : []);
+      output.textContent = allLines.join("\n");
 
-      // CSV
+      // 6) BUILD CSV (EXCEPTIONS ONLY)
       const csv = [];
+      // requested exact header casing
       csv.push("System,pro,orderid/num,stage/status,pod");
 
       function csvEscape(v){
         const s = String(v ?? "");
-        return (s.includes('"') || s.includes(",") || s.includes("\n"))
-          ? `"${s.replace(/"/g,'""')}"`
-          : s;
+        if (s.includes('"') || s.includes(",") || s.includes("\n")){
+          return `"${s.replace(/"/g,'""')}"`;
+        }
+        return s;
       }
 
-      groupBoth.concat(groupFmsOnly,groupTmsOnly).forEach(pro=>{
-        const f=fmsByPro[pro];
-        const t=tmsByPro[pro];
+      for (const pro of groupBoth.concat(groupFmsOnly, groupTmsOnly)){
+        const f = fmsByPro[pro];
+        const t = tmsByPro[pro];
 
-        if (f?.hasPod){
+        if (f && f.hasPod){
           csv.push([
             "FMS",
             csvEscape(f.pro),
@@ -754,7 +827,7 @@
           ].join(","));
         }
 
-        if (t?.podFound){
+        if (t && t.podFound){
           csv.push([
             "TMS",
             csvEscape(t.pro),
@@ -763,7 +836,7 @@
             csvEscape("POD Found")
           ].join(","));
         }
-      });
+      }
 
       lastResultsCSV = csv.join("\n");
       exportBtn.disabled = csv.length <= 1;
@@ -783,6 +856,7 @@
     }
   }
 
+  // ----- EXPORT CSV -----
   function exportCSV(){
     if (!lastResultsCSV) return;
     const blob = new Blob([lastResultsCSV],{type:"text/csv"});
