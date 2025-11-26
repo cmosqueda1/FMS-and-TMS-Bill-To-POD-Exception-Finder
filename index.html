@@ -1,297 +1,96 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>FMS Bill-To POD Checker</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FMS/TMS POD Check</title>
 
-<style>
-  :root {
-    --bg: #0a0c10;
-    --card: #0f1420;
-    --text: #e6edf6;
-    --muted: #93a4b7;
-    --accent: #7c3aed;
-    --accent2: #22d3ee;
-    --ok: #10b981;
-    --bad: #ef4444;
-    --border: #1f2a3a;
-  }
-
-  html, body {
-    margin: 0;
-    background: radial-gradient(1200px 900px at 10% -10%, #121a2b 0%, transparent 60%), var(--bg);
-    color: var(--text);
-    font-family: Inter, system-ui, Segoe UI, Arial, sans-serif;
-  }
-
-  .wrap { max-width: 900px; margin: 40px auto; padding: 0 16px 80px; }
-  h1 { margin: 0 0 8px; font-size: 28px; font-weight: 800; }
-  .sub { color: var(--muted); margin-bottom: 15px; }
-
-  .card {
-    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent), var(--card);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 20px;
-    box-shadow: 0 12px 32px rgba(0,0,0,.35);
-    margin-bottom: 20px;
-  }
-
-  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px; }
-
-  input, textarea {
-    width: 100%;
-    background: #0b0f19;
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 12px;
-    padding: 10px 12px;
-    font-size: 14px;
-    outline: none;
-  }
-
-  input:focus, textarea:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px rgba(124,58,237,.5);
-  }
-
-  .btn {
-    cursor: pointer;
-    border-radius: 12px;
-    padding: 12px 16px;
-    font-weight: 700;
-    font-size: 14px;
-    border: 1px solid transparent;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .btn-primary {
-    background: linear-gradient(90deg, var(--accent), var(--accent2));
-    color: #000;
-  }
-  .btn-ghost {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text);
-  }
-
-  .dropdown {
-    position: relative;
-    margin-top: 8px;
-  }
-
-  .dropdown-list {
-    position: absolute;
-    top: 42px;
-    left: 0;
-    right: 0;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    max-height: 250px;
-    overflow-y: auto;
-    z-index: 9999;
-    display: none;
-  }
-
-  .dropdown-item {
-    padding: 10px;
-    cursor: pointer;
-    border-bottom: 1px solid var(--border);
-  }
-  .dropdown-item:hover {
-    background: rgba(255,255,255,0.06);
-  }
-
-  pre {
-    white-space: pre-wrap;
-    background: #0b0f19;
-    border: 1px solid var(--border);
-    padding: 14px;
-    border-radius: 14px;
-    max-height: 500px;
-    overflow-y: auto;
-    font-size: 14px;
-  }
-
-  .spinner {
-    border: 2px solid rgba(148,163,184,.4);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    width: 14px;
-    height: 14px;
-    animation: spin .6s linear infinite;
-    display: inline-block;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-</style>
-</head>
-
-<body>
-<div class="wrap">
-
-  <h1>FMS Bill-To POD Checker</h1>
-  <div class="sub">
-    Search Bill-To → load all orders → check POD per order.
-    <br>Uses your <strong>/api/fms.js</strong> back-end.
-  </div>
-
-  <!-- BILL-TO SEARCH -->
-  <div class="card">
-    <label>Bill-To Search</label>
-    <input id="billToInput" placeholder="Type customer name... (ex: crayola)" />
-
-    <div class="dropdown">
-      <div id="billToList" class="dropdown-list"></div>
-    </div>
-
-    <button id="searchOrdersBtn" class="btn btn-primary" style="margin-top:12px;">
-      <span id="spinner1" class="spinner" style="display:none;"></span>
-      Search Orders for Selected Bill-To
-    </button>
-  </div>
-
-  <!-- RESULTS -->
-  <div class="card">
-    <label>Results</label>
-    <pre id="results">No results yet.</pre>
-  </div>
-</div>
-
-<script>
-/* ======================================================
-   ELEMENTS
-====================================================== */
-const billToInput = document.getElementById("billToInput");
-const billToList  = document.getElementById("billToList");
-const searchOrdersBtn = document.getElementById("searchOrdersBtn");
-const spinner1 = document.getElementById("spinner1");
-const resultsEl = document.getElementById("results");
-
-/* STATE */
-let selectedBillTo = null;
-
-/* ======================================================
-   BILL-TO AUTOCOMPLETE SEARCH
-====================================================== */
-billToInput.addEventListener("input", async () => {
-  const code = billToInput.value.trim();
-  if (!code) {
-    billToList.style.display = "none";
-    return;
-  }
-
-  const res = await fetch("/api/fms", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "searchBillTo",
-      payload: { code }
-    })
-  }).then(r => r.json()).catch(() => null);
-
-  if (!res || !res.data || !Array.isArray(res.data.items)) {
-    billToList.style.display = "none";
-    return;
-  }
-
-  const items = res.data.items;
-  billToList.innerHTML = "";
-  items.forEach(i => {
-    const div = document.createElement("div");
-    div.className = "dropdown-item";
-    div.textContent = `${i.print_name} (${i.code})`;
-    div.onclick = () => {
-      selectedBillTo = i.code;
-      billToInput.value = `${i.print_name} (${i.code})`;
-      billToList.style.display = "none";
-    };
-    billToList.appendChild(div);
-  });
-
-  billToList.style.display = items.length ? "block" : "none";
-});
-
-/* ======================================================
-   ORDER SEARCH + POD CHECK
-====================================================== */
-searchOrdersBtn.addEventListener("click", async () => {
-  if (!selectedBillTo) {
-    alert("Please select a Bill-To first.");
-    return;
-  }
-
-  spinner1.style.display = "inline-block";
-  resultsEl.textContent = "Loading orders…";
-
-  // STEP 1 — get all orders for this Bill-To
-  const orderRes = await fetch("/api/fms", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "searchOrdersByBillTo",
-      payload: { billToCode: selectedBillTo }
-    })
-  }).then(r => r.json()).catch(e => ({ error: e }));
-
-  if (!orderRes || orderRes.error) {
-    resultsEl.textContent = "Error loading orders.";
-    spinner1.style.display = "none";
-    return;
-  }
-
-  const items =
-    orderRes?.data?.items ||
-    orderRes?.items ||
-    [];
-
-  if (!items.length) {
-    resultsEl.textContent = "No orders found for Bill-To.";
-    spinner1.style.display = "none";
-    return;
-  }
-
-  resultsEl.textContent = `Found ${items.length} orders.\nChecking POD files…\n\n`;
-
-  // STEP 2 — Check POD files for each
-  for (const it of items) {
-    const orderNo = it.order_no || it.orderNo || null;
-    const pro = it.tracking_no || it.trackingNo || null;
-    const status = it.order_status || it.orderStatus || "N/A";
-
-    let podFound = false;
-
-    if (orderNo) {
-      const podRes = await fetch("/api/fms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "files",
-          payload: { orderNo }
-        })
-      }).then(r => r.json()).catch(() => null);
-
-      const files =
-        podRes?.data?.items ||
-        podRes?.items ||
-        [];
-
-      podFound = files.some(f =>
-        String(f.file_type || "").toUpperCase() === "POD"
-      );
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #0a0c10;
+      color: #e6edf6;
     }
 
-    // output format
-    const fmsPodText = podFound ? "POD found" : "No POD";
-    resultsEl.textContent +=
-      `PRO: ${pro} | FMS - ${fmsPodText} | FMS Status - ${status}\n---\n`;
-  }
+    .card {
+      background: #0f1420;
+      padding: 20px;
+      border-radius: 10px;
+      border: 1px solid #1f2a3a;
+      margin-bottom: 20px;
+    }
 
-  spinner1.style.display = "none";
-});
-</script>
+    input {
+      width: 260px;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #444;
+      background: #1b2230;
+      color: #e6edf6;
+    }
+
+    button {
+      padding: 8px 18px;
+      background: #7c3aed;
+      border: none;
+      color: white;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-left: 5px;
+    }
+
+    #output {
+      white-space: pre-wrap;
+      font-family: Consolas, monospace;
+      margin-top: 20px;
+      line-height: 1.5;
+    }
+
+  </style>
+</head>
+<body>
+
+  <!-- Bill-To Search -->
+  <div class="card">
+    <h2>Search Bill-To</h2>
+    <input id="billtoInput" type="text" placeholder="Enter Bill-To code..." />
+    <button onclick="searchBillTo()">Search</button>
+  </div>
+
+  <div id="output"></div>
+
+  <script>
+    async function searchBillTo() {
+      const code = document.getElementById("billtoInput").value.trim();
+      const output = document.getElementById("output");
+
+      if (!code) {
+        output.textContent = "Please enter a Bill-To code.";
+        return;
+      }
+
+      output.textContent = "Searching FMS Bill-To…\n";
+
+      try {
+        const resp = await fetch("/api/fms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "searchBillTo",
+            payload: { code }
+          })
+        });
+
+        const data = await resp.json();
+
+        output.textContent += JSON.stringify(data, null, 2);
+      } catch (err) {
+        output.textContent += "Error: " + err.message;
+      }
+    }
+  </script>
 
 </body>
 </html>
