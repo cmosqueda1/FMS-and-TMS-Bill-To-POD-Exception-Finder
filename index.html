@@ -1,61 +1,100 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FMS/TMS POD Check</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FMS/TMS POD & Bill-To Utility</title>
 
   <style>
+    :root {
+      --bg: #0a0c10;
+      --card: #0f1420;
+      --text: #e6edf6;
+      --muted: #93a4b7;
+      --accent: #7c3aed;
+      --border: #1f2a3a;
+    }
+
     body {
-      font-family: Arial, sans-serif;
       margin: 0;
-      padding: 20px;
-      background: #0a0c10;
-      color: #e6edf6;
+      padding: 30px;
+      background: var(--bg);
+      font-family: "Inter", system-ui, sans-serif;
+      color: var(--text);
     }
 
     .card {
-      background: #0f1420;
-      padding: 20px;
-      border-radius: 10px;
-      border: 1px solid #1f2a3a;
-      margin-bottom: 20px;
+      background: var(--card);
+      padding: 22px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      max-width: 900px;
+      margin: 0 auto 30px auto;
+    }
+
+    h2 {
+      margin-top: 0;
+      margin-bottom: 16px;
+      font-weight: 600;
     }
 
     input {
       width: 260px;
-      padding: 8px;
-      border-radius: 6px;
-      border: 1px solid #444;
+      padding: 10px 12px;
+      font-size: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
       background: #1b2230;
-      color: #e6edf6;
+      color: var(--text);
+      outline: none;
+      margin-right: 10px;
     }
 
     button {
-      padding: 8px 18px;
-      background: #7c3aed;
+      padding: 10px 20px;
       border: none;
+      font-size: 15px;
+      border-radius: 8px;
+      background: var(--accent);
       color: white;
-      border-radius: 6px;
       cursor: pointer;
-      margin-left: 5px;
+      font-weight: 600;
+    }
+
+    button:hover {
+      opacity: 0.88;
     }
 
     #output {
-      white-space: pre-wrap;
-      font-family: Consolas, monospace;
       margin-top: 20px;
-      line-height: 1.5;
+      white-space: pre-wrap;
+      font-family: "Consolas", monospace;
+      background: #0c1018;
+      border: 1px solid var(--border);
+      padding: 18px;
+      border-radius: 10px;
+      color: var(--text);
+      max-width: 900px;
+      margin-left: auto;
+      margin-right: auto;
+      font-size: 14px;
+      line-height: 1.55;
     }
-
   </style>
 </head>
+
 <body>
 
-  <!-- Bill-To Search -->
+  <!-- BILL-TO SEARCH SECTION -->
   <div class="card">
     <h2>Search Bill-To</h2>
-    <input id="billtoInput" type="text" placeholder="Enter Bill-To code..." />
+
+    <input
+      type="text"
+      id="billtoInput"
+      placeholder="Enter Bill-To code (ex: CRAYOLA)"
+    />
+
     <button onclick="searchBillTo()">Search</button>
   </div>
 
@@ -67,7 +106,7 @@
       const output = document.getElementById("output");
 
       if (!code) {
-        output.textContent = "Please enter a Bill-To code.";
+        output.textContent = "Please enter a Bill-To code first.";
         return;
       }
 
@@ -87,10 +126,9 @@
 
         output.textContent += JSON.stringify(data, null, 2);
       } catch (err) {
-        output.textContent += "Error: " + err.message;
+        output.textContent += "\nError: " + err.message;
       }
     }
   </script>
-
 </body>
 </html>
