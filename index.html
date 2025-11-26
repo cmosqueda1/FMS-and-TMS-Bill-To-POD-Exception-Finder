@@ -1,134 +1,231 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FMS/TMS POD & Bill-To Utility</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FMS Bill-To POD Exception Finder</title>
 
-  <style>
-    :root {
-      --bg: #0a0c10;
-      --card: #0f1420;
-      --text: #e6edf6;
-      --muted: #93a4b7;
-      --accent: #7c3aed;
-      --border: #1f2a3a;
-    }
-
-    body {
-      margin: 0;
-      padding: 30px;
-      background: var(--bg);
-      font-family: "Inter", system-ui, sans-serif;
-      color: var(--text);
-    }
-
-    .card {
-      background: var(--card);
-      padding: 22px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      max-width: 900px;
-      margin: 0 auto 30px auto;
-    }
-
-    h2 {
-      margin-top: 0;
-      margin-bottom: 16px;
-      font-weight: 600;
-    }
-
-    input {
-      width: 260px;
-      padding: 10px 12px;
-      font-size: 16px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: #1b2230;
-      color: var(--text);
-      outline: none;
-      margin-right: 10px;
-    }
-
-    button {
-      padding: 10px 20px;
-      border: none;
-      font-size: 15px;
-      border-radius: 8px;
-      background: var(--accent);
-      color: white;
-      cursor: pointer;
-      font-weight: 600;
-    }
-
-    button:hover {
-      opacity: 0.88;
-    }
-
-    #output {
-      margin-top: 20px;
-      white-space: pre-wrap;
-      font-family: "Consolas", monospace;
-      background: #0c1018;
-      border: 1px solid var(--border);
-      padding: 18px;
-      border-radius: 10px;
-      color: var(--text);
-      max-width: 900px;
-      margin-left: auto;
-      margin-right: auto;
-      font-size: 14px;
-      line-height: 1.55;
-    }
-  </style>
+<style>
+  :root{
+    --bg:#0a0c10;
+    --card:#0f1420;
+    --text:#e6edf6;
+    --muted:#93a4b7;
+    --accent:#7c3aed;
+    --accent2:#22d3ee;
+    --ok:#10b981;
+    --bad:#ef4444;
+    --border:#1f2a3a;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    background:radial-gradient(1200px 900px at 10% -10%, #121a2b 0%, transparent 60%), var(--bg);
+    color:var(--text);
+    font-family:Inter,system-ui,sans-serif;
+    padding:30px;
+  }
+  .wrap{
+    max-width:980px;
+    margin:0 auto;
+  }
+  h1{
+    margin:0;
+    font-size:26px;
+    font-weight:800;
+  }
+  .sub{
+    color:var(--muted);
+    margin-bottom:22px;
+  }
+  .card{
+    background:linear-gradient(180deg,rgba(255,255,255,.02),transparent),var(--card);
+    border:1px solid var(--border);
+    border-radius:18px;
+    padding:20px;
+    margin-bottom:20px;
+  }
+  .autocomplete-wrapper{
+    position:relative;
+    max-width:360px;
+  }
+  input{
+    width:100%;
+    padding:12px 14px;
+    border-radius:14px;
+    border:1px solid var(--border);
+    background:#0b0f19;
+    color:var(--text);
+    font-size:15px;
+    outline:none;
+  }
+  input:focus{
+    border-color:var(--accent);
+    box-shadow:0 0 0 1px rgba(124,58,237,.5);
+  }
+  .autocomplete-list{
+    position:absolute;
+    top:105%;
+    left:0;
+    right:0;
+    background:#020617;
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:6px 0;
+    max-height:220px;
+    overflow-y:auto;
+    display:none;
+    z-index:20;
+  }
+  .autocomplete-item{
+    padding:8px 12px;
+    cursor:pointer;
+  }
+  .autocomplete-item:hover{
+    background:#111827;
+  }
+  .autocomplete-main{
+    font-size:14px;
+    color:var(--text);
+  }
+  .autocomplete-sub{
+    font-size:11px;
+    color:var(--muted);
+  }
+  .btn{
+    padding:12px 18px;
+    border-radius:14px;
+    border:none;
+    cursor:pointer;
+    font-weight:700;
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+  }
+  .btn-primary{
+    background:linear-gradient(90deg,var(--accent),var(--accent2));
+    color:#060913;
+  }
+  pre{
+    white-space:pre-wrap;
+    background:#0b0f19;
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:14px;
+    font-size:13px;
+    max-height:460px;
+    overflow-y:auto;
+  }
+</style>
 </head>
 
 <body>
+<div class="wrap">
 
-  <!-- BILL-TO SEARCH SECTION -->
-  <div class="card">
-    <h2>Search Bill-To</h2>
-
-    <input
-      type="text"
-      id="billtoInput"
-      placeholder="Enter Bill-To code (ex: CRAYOLA)"
-    />
-
-    <button onclick="searchBillTo()">Search</button>
+  <h1>FMS Bill-To Search + POD Utility</h1>
+  <div class="sub">
+    Live Bill-To lookup using backend-authenticated FMS login.
   </div>
 
-  <div id="output"></div>
+  <!-- Bill-To Autocomplete -->
+  <div class="card">
+    <label>Bill-To (live search)</label>
+    <div class="autocomplete-wrapper">
+      <input id="billToInput" type="text" placeholder="Type at least 2 characters..." autocomplete="off"/>
+      <div id="billToList" class="autocomplete-list"></div>
+    </div>
+    <div id="billToHelp" style="color:var(--muted);margin-top:6px;">
+      Start typing to search Bill-To customers.
+    </div>
+  </div>
 
-  <script>
-    async function searchBillTo() {
-      const code = document.getElementById("billtoInput").value.trim();
-      const output = document.getElementById("output");
+  <!-- Results -->
+  <div class="card">
+    <strong>Results</strong>
+    <pre id="output">No results yet.</pre>
+  </div>
 
-      if (!code) {
-        output.textContent = "Please enter a Bill-To code first.";
-        return;
-      }
+</div>
 
-      output.textContent = "Searching FMS Bill-To…\n";
+<script>
+const billToInput = document.getElementById("billToInput");
+const billToList  = document.getElementById("billToList");
+const billToHelp  = document.getElementById("billToHelp");
+const output      = document.getElementById("output");
 
-      try {
-        const resp = await fetch("/api/fms", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "searchBillTo",
-            payload: { code }
-          })
-        });
+function debounce(fn,delay){
+  let t;
+  return (...args)=>{ clearTimeout(t); t = setTimeout(()=>fn(...args),delay); };
+}
 
-        const data = await resp.json();
+document.addEventListener("click",e=>{
+  if (!billToList.contains(e.target) && e.target!==billToInput){
+    billToList.style.display = "none";
+  }
+});
 
-        output.textContent += JSON.stringify(data, null, 2);
-      } catch (err) {
-        output.textContent += "\nError: " + err.message;
-      }
+/*** AUTOSEARCH LOGIC (NO BUTTON) ***/
+const debouncedSearch = debounce(async ()=>{
+  const q = billToInput.value.trim();
+  billToList.style.display = "none";
+  output.textContent = "No results yet.";
+
+  if (q.length < 2){
+    billToHelp.textContent = "Type at least 2 characters.";
+    return;
+  }
+
+  billToHelp.textContent = "Searching…";
+
+  try {
+    const resp = await fetch("/api/fms",{
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({
+        action:"searchBillTo",
+        payload:{ code:q }
+      })
+    });
+
+    const data = await resp.json();
+    const items = data?.data?.items || [];
+
+    if (!items.length){
+      billToHelp.textContent = "No matches found.";
+      billToList.innerHTML = "";
+      billToList.style.display = "block";
+      billToList.innerHTML = `<div class="autocomplete-item" style="color:var(--muted)">No matches found.</div>`;
+      return;
     }
-  </script>
+
+    billToList.innerHTML = "";
+    items.forEach(it=>{
+      const div = document.createElement("div");
+      div.className = "autocomplete-item";
+      div.innerHTML = `
+        <div class="autocomplete-main">${it.print_name || it.code}</div>
+        <div class="autocomplete-sub">${it.code}</div>
+      `;
+      div.onclick = ()=>{
+        billToInput.value = `${it.print_name || it.code} (${it.code})`;
+        billToList.style.display = "none";
+        billToHelp.textContent = `Selected: ${it.print_name || it.code}`;
+        output.textContent = JSON.stringify(it,null,2);
+      };
+      billToList.appendChild(div);
+    });
+
+    billToList.style.display = "block";
+    billToHelp.textContent = "Select a Bill-To from the list.";
+
+  } catch(err){
+    console.error(err);
+    billToHelp.textContent = "Error searching Bill-To.";
+  }
+},300);
+
+billToInput.addEventListener("input",debouncedSearch);
+</script>
+
 </body>
 </html>
