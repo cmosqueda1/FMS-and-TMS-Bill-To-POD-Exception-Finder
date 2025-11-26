@@ -5,6 +5,7 @@
 // - Bill-To search
 // - Raw order search
 // - Order search by Bill-To
+// - Multi-PRO lookup (lookupPros)
 // - POD file lookup
 // - Auto-retry on 401, 429, and transient failures
 
@@ -65,6 +66,15 @@ export default async function handler(req, res) {
         const { orderNo } = payload || {};
         if (!orderNo) return res.status(400).json({ error: "Missing orderNo" });
         return res.json(await getFiles(orderNo));
+      }
+
+      case "lookupPros": {
+        const { pros } = payload || {};
+        if (!Array.isArray(pros) || pros.length === 0) {
+          return res.json({ data: { items: [] } });
+        }
+        const data = await lookupPros(pros);
+        return res.json(data);
       }
 
       default:
@@ -221,6 +231,66 @@ async function searchOrdersByBillTo(billToCode) {
     bill_to_accounts: [billToCode],
     master_order_ids: [],
     status: ["10","53","19","20","22","54","26","30","40","42","51","52"], 
+    sub_status: [],
+    shipment_types: [],
+    service_levels: [],
+    trips: [],
+    shipper_terminals: [],
+    origin_states: [],
+    origin_zip_codes: [],
+    request_pickup_date: [],
+    pickup_appointment: [],
+    current_locations: [],
+    service_terminals: [],
+    lhs: [],
+    lh_etd_date: [],
+    lh_eta_date: [],
+    consignee_terminals: [],
+    consignee_state: [],
+    consignee_zip_codes: [],
+    desired_delivery_date: [],
+    delivery_appointment: [],
+    delivery_date: [],
+    pickup_complete_date: [],
+    pu_nos: [],
+    po_nos: [],
+    exception: false,
+    delayed: false,
+    hold: false,
+    business_client: "",
+    record_status: "0",
+    page_number: 1,
+    page_size: 10000
+  };
+
+  return searchOrders(body);
+}
+
+/* ============================================================
+   Multi-PRO Lookup (tracking_nos)
+============================================================ */
+
+async function lookupPros(prosRaw) {
+  const pros = Array.from(
+    new Set(
+      (prosRaw || [])
+        .map(p => String(p || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!pros.length) {
+    return { data: { items: [] } };
+  }
+
+  const body = {
+    order_nos: [],
+    tracking_nos: pros,
+    customer_references: [],
+    bols: [],
+    bill_to_accounts: [],
+    master_order_ids: [],
+    status: [],
     sub_status: [],
     shipment_types: [],
     service_levels: [],
