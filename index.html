@@ -19,6 +19,7 @@
   h1{margin:0 0 6px;font-size:26px;font-weight:800}
   .sub{color:var(--muted);margin-bottom:18px;font-size:14px}
 
+  /* CARD — REMOVED stacking context */
   .card{
     background:linear-gradient(180deg,rgba(255,255,255,.02),transparent),var(--card);
     border:1px solid var(--border);
@@ -26,10 +27,35 @@
     padding:18px;
     box-shadow:0 10px 30px rgba(0,0,0,.35);
     margin-bottom:20px;
-    position:relative;        /* FIX */
-    z-index:50;               /* FIX */
-    overflow:visible;         /* FIX */
+    overflow:visible !important;   /* ALLOW child overflow */
   }
+
+  /* Dedicated overlay container */
+  .autocomplete-wrapper{
+    position:relative;
+    z-index:9999;    /* sits above ALL cards */
+  }
+
+  input[type=text]{
+    width:350px;background:#0b0f19;border:1px solid var(--border);
+    padding:10px;border-radius:14px;font-size:14px;color:var(--text);
+  }
+
+  .autocomplete-list{
+    position:absolute;
+    left:0;top:100%;
+    width:350px;
+    background:#020617;
+    border-radius:14px;
+    border:1px solid var(--border);
+    box-shadow:0 10px 30px rgba(0,0,0,.5);
+    max-height:260px;
+    overflow-y:auto;
+    display:none;
+    z-index:999999 !important;    /* FORCED to top */
+  }
+  .autocomplete-item{padding:10px;cursor:pointer}
+  .autocomplete-item:hover{background:#111827}
 
   .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   .pill{
@@ -50,26 +76,6 @@
   }
   .btn-ghost{background:transparent;border-color:var(--border);color:var(--text)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-
-  input[type=text]{
-    width:350px;background:#0b0f19;border:1px solid var(--border);
-    padding:10px;border-radius:14px;font-size:14px;color:var(--text);
-  }
-
-  .autocomplete-list{
-    position:absolute;
-    width:350px;
-    background:#020617;
-    border-radius:14px;
-    border:1px solid var(--border);
-    box-shadow:0 10px 30px rgba(0,0,0,.5);
-    max-height:200px;
-    overflow:auto;
-    display:none;
-    z-index:99999 !important;    /* FIX */
-  }
-  .autocomplete-item{padding:10px;cursor:pointer}
-  .autocomplete-item:hover{background:#111827}
 
   pre{
     white-space:pre-wrap;background:#0b0f19;border:1px solid var(--border);
@@ -101,16 +107,17 @@
   </div>
 
   <div class="sub">
-    Select a Bill-To to check:<br>
-    • All linked PROs in <b>FMS</b><br>
-    • All linked PROs in <b>TMS</b><br>
-    • Cross-match + fill missing PROs<br>
-    • Show POD status & delivery status
+    Select a Bill-To:<br>
+    • All linked PROs in FMS<br>
+    • All linked PROs in TMS<br>
+    • Auto match + fill missing PROs<br>
+    • Show POD & delivery status
   </div>
 
   <div class="card">
     <label>Bill-To (Live Search):</label>
-    <div style="position:relative">
+
+    <div class="autocomplete-wrapper">
       <input id="billToInput" type="text" placeholder="Search Bill-To...">
       <div id="billToList" class="autocomplete-list"></div>
     </div>
@@ -153,10 +160,9 @@ const $ = id => document.getElementById(id);
 let FMS_TOKEN = null;
 let TMS_USERID = null;
 let TMS_TOKEN = null;
-
 let selectedBillTo = null;
 
-/* UI state updates */
+/* Visual status */
 function setFms(ok){
   $("fmsDot").style.background = ok ? "#10b981" : "#ef4444";
   $("fmsAuth").textContent = ok ? "FMS: Authenticated" : "FMS: Not authenticated";
@@ -175,7 +181,6 @@ async function fmsAPI(action, payload={}) {
   });
   return resp.json();
 }
-
 async function tmsAPI(action, payload={}) {
   const resp = await fetch("/api/tms", {
     method: "POST",
@@ -197,10 +202,12 @@ $("billToInput").addEventListener("input", ()=>{
 
   searchTimeout=setTimeout(async()=>{
 
+    /* FMS LOGIN if needed */
     const login = await fmsAPI("login");
     FMS_TOKEN = login?.token || login?.data?.token;
     setFms(!!FMS_TOKEN);
 
+    /* Live search */
     const body = {
       bill_to_accounts: [],
       page_number: 1,
@@ -212,10 +219,11 @@ $("billToInput").addEventListener("input", ()=>{
     const items = result?.data?.items || [];
 
     $("billToList").innerHTML = "";
+
     items.forEach(it=>{
       const div=document.createElement("div");
       div.className="autocomplete-item";
-      div.textContent=it.print_name || it.code;
+      div.textContent = it.print_name || it.code;
 
       div.onclick=()=>{
         $("billToInput").value = div.textContent;
@@ -234,17 +242,17 @@ $("billToInput").addEventListener("input", ()=>{
 });
 
 
-/* RUN SEARCH LOGIC */
+/* RUN MAIN SEARCH */
 $("runBtn").addEventListener("click", async()=>{
 
   if (!selectedBillTo) return;
 
   $("runSpin").style.display="inline-block";
-  $("status").textContent="Logging in to FMS/TMS...";
+  $("status").textContent="Logging in...";
   $("out").textContent="";
   $("fill").style.width="0%";
 
-  /* Step 1: Login */
+  /* Login both sides */
   const fmsLogin = await fmsAPI("login");
   FMS_TOKEN = fmsLogin?.token || fmsLogin?.data?.token;
   setFms(!!FMS_TOKEN);
@@ -254,8 +262,8 @@ $("runBtn").addEventListener("click", async()=>{
   TMS_TOKEN = tmsLogin?.UserToken;
   setTms(!!TMS_USERID);
 
-  /* Step 2: FMS search by Bill-To */
-  $("status").textContent = "Searching FMS for Bill-To...";
+  /* FMS BILL-TO QUERY */
+  $("status").textContent="Searching FMS…";
 
   const fmsBody = {
     bill_to_accounts: [selectedBillTo.code],
@@ -271,45 +279,43 @@ $("runBtn").addEventListener("click", async()=>{
     const pro = String(it.reference5 || it.tracking_no || "").trim();
     if (!pro) continue;
 
-    const pod = await fmsAPI("files", { token:FMS_TOKEN, orderNo:it.order_no });
-    const files = pod?.data?.items || [];
-    const hasPod = files.some(f => String(f.file_type).toUpperCase()==="POD");
+    const podRes = await fmsAPI("files", { token:FMS_TOKEN, orderNo:it.order_no });
+    const files = podRes?.data?.items || [];
+    const hasPod = files.some(f=>String(f.file_type).toUpperCase()==="POD");
 
-    fmsMap.set(pro, {
+    fmsMap.set(pro,{
       status: it.order_status || "N/A",
       hasPod
     });
   }
 
-  /* Step 3: TMS search by Bill-To */
-  $("status").textContent = "Searching TMS for Bill-To...";
+  /* TMS BILL-TO QUERY */
+  $("status").textContent="Searching TMS…";
 
   const tmsForm = {
     input_filter_billto: selectedBillTo.print_name || selectedBillTo.code,
     input_filter_billto_code: selectedBillTo.code,
     input_stage_id: "-4,-3,-2,-1,0,1,2,3,4",
-    input_page_num: "1",
-    input_page_size: "10000",
-    UserID: TMS_USERID,
-    UserToken: TMS_TOKEN,
-    pageName: "dashboardTmsTrace"
+    input_page_num:"1",
+    input_page_size:"10000",
+    UserID:TMS_USERID,
+    UserToken:TMS_TOKEN,
+    pageName:"dashboardTmsTrace"
   };
 
   const tmsRes = await tmsAPI("trace", tmsForm);
-  const tmsRows = tmsRes?.data || tmsRes || [];
+  const tmsRows = tmsRes?.data || [];
   const tmsMap = new Map();
 
   tmsRows.forEach(r=>{
     const pro = String(r.tms_order_pro || r.Pro || "").trim();
     if (!pro) return;
-
     const hasPod = String(r.pod_image||"").toUpperCase()==="Y";
     const status = r.StatusDesc || r.Status || "N/A";
-
     tmsMap.set(pro,{status,hasPod});
   });
 
-  /* Step 4: Combine all PROs */
+  /* COMBINE ALL PROs */
   const allPros = [...new Set([...fmsMap.keys(), ...tmsMap.keys()])];
   const total = allPros.length;
   let processed = 0;
@@ -318,16 +324,16 @@ $("runBtn").addEventListener("click", async()=>{
 
   for (const pro of allPros) {
 
-    /* Ensure FMS */
+    /* FMS fallback search */
     let fm = fmsMap.get(pro);
     if (!fm) {
-      const res = await fmsAPI("search", {
+      const res = await fmsAPI("search",{
         token:FMS_TOKEN,
         body:{ tracking_nos:[pro], page_number:1, page_size:10 }
       });
       const item = res?.data?.items?.[0];
       if (item) {
-        const files = await fmsAPI("files",{token:FMS_TOKEN, orderNo:item.order_no});
+        const files = await fmsAPI("files",{token:FMS_TOKEN,orderNo:item.order_no});
         const pod = files?.data?.items || [];
         fm = {
           status:item.order_status || "N/A",
@@ -338,16 +344,16 @@ $("runBtn").addEventListener("click", async()=>{
       }
     }
 
-    /* Ensure TMS */
+    /* TMS fallback search */
     let tm = tmsMap.get(pro);
     if (!tm) {
       const form = {
         input_filter_pro: pro,
-        input_stage_id: "-4,-3,-2,-1,0,1,2,3,4",
+        input_stage_id:"-4,-3,-2,-1,0,1,2,3,4",
         input_page_num:"1",
         input_page_size:"10",
-        UserID: TMS_USERID,
-        UserToken: TMS_TOKEN,
+        UserID:TMS_USERID,
+        UserToken:TMS_TOKEN,
         pageName:"dashboardTmsTrace"
       };
       const tr = await tmsAPI("trace", form);
@@ -357,7 +363,7 @@ $("runBtn").addEventListener("click", async()=>{
             status: row.StatusDesc || row.Status || "N/A",
             hasPod: String(row.pod_image||"").toUpperCase()==="Y"
           }
-        : {status:"No TMS record found", hasPod:false};
+        : {status:"No TMS record found",hasPod:false};
     }
 
     lines.push(
@@ -376,6 +382,7 @@ $("runBtn").addEventListener("click", async()=>{
   $("status").textContent = "Done.";
   $("runSpin").style.display="none";
   $("exportBtn").disabled=false;
+
 });
 
 
