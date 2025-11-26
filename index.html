@@ -188,78 +188,39 @@ async function tmsAPI(action, payload={}) {
   return resp.json();
 }
 
-/* AUTOCOMPLETE LOGIC */
+/* AUTOCOMPLETE LOGIC (Correct Bill-To endpoint) */
 let searchTimeout=null;
 
 $("billToInput").addEventListener("input", ()=>{
   clearTimeout(searchTimeout);
-
   $("billToList").style.display="none";
+
   const q = $("billToInput").value.trim();
   if (q.length < 2) return;
 
   searchTimeout=setTimeout(async()=>{
 
-    /* LOGIN TO FMS */
     const login = await fmsAPI("login");
-    FMS_TOKEN = login?.token || login?.data?.token;
+    FMS_TOKEN = login?.token;
     setFms(!!FMS_TOKEN);
 
-    /* CORRECT FMS PAYLOAD */
-    const body = {
-      bill_to_accounts: [],
-      bols: [],
-      business_client: q,
-      consignee_state: [],
-      consignee_terminals: [],
-      consignee_zip_codes: [],
-      current_locations: [],
-      customer_references: [],
-      delayed: false,
-      delivery_appointment: [],
-      delivery_date: [],
-      desired_delivery_date: [],
-      exception: false,
-      hold: false,
-      lh_eta_date: [],
-      lh_etd_date: [],
-      lhs: [],
-      master_order_ids: [],
-      order_nos: [],
-      origin_states: [],
-      origin_zip_codes: [],
-      page_number: 1,
-      page_size: 20,
-      pickup_appointment: [],
-      pickup_complete_date: [],
-      po_nos: [],
-      pu_nos: [],
-      record_status: "0",
-      request_pickup_date: [],
-      service_levels: [],
-      service_terminals: [],
-      shipment_types: [],
-      shipper_terminals: [],
-      status: [],
-      sub_status: [],
-      tracking_nos: [],
-      trips: []
-    };
+    const result = await fmsAPI("searchBillTo", {
+      token: FMS_TOKEN,
+      code: q
+    });
 
-    const result = await fmsAPI("search", {token:FMS_TOKEN, body});
     const items = result?.data?.items || [];
-
     $("billToList").innerHTML = "";
 
     items.forEach(it=>{
       const div=document.createElement("div");
       div.className="autocomplete-item";
-      div.textContent = it.print_name || it.code;
+      div.textContent = `${it.print_name} (${it.code})`;
 
       div.onclick=()=>{
-        $("billToInput").value = div.textContent;
+        $("billToInput").value = it.print_name;
         selectedBillTo = it;
-        $("billToSelected").textContent = "Selected: " + div.textContent;
+        $("billToSelected").textContent = "Selected: " + it.print_name;
         $("billToList").style.display="none";
         $("runBtn").disabled = false;
       };
@@ -285,7 +246,7 @@ $("runBtn").addEventListener("click", async()=>{
 
   /* LOGIN BOTH SYSTEMS */
   let login = await fmsAPI("login");
-  FMS_TOKEN = login?.token || login?.data?.token;
+  FMS_TOKEN = login?.token;
   setFms(!!FMS_TOKEN);
 
   login = await tmsAPI("login");
@@ -347,7 +308,7 @@ $("runBtn").addEventListener("click", async()=>{
     });
   });
 
-  /* COMBINE */
+  /* COMBINE FMS + TMS RESULTS */
   const allPros = [...new Set([...fmsMap.keys(),...tmsMap.keys()])];
   const total=allPros.length;
   let processed=0;
