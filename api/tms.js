@@ -3,7 +3,7 @@
 // - Login to check_login.php (UserID + UserToken)
 // - Cookie + token caching
 // - traceByBillTo (get_tms_trace.php)
-// - lookupPros (multi-PRO search via input_filter_pro, get_tms_trace.php)
+// - lookupPros (multi-PRO via input_filter_pro)
 
 const TMS_BASE = "https://tms.freightapp.com";
 
@@ -45,6 +45,7 @@ export default async function handler(req, res) {
         return res.json(data);
       }
 
+      // Multi-PRO lookup by PRO, NO extra status filters
       case "lookupPros": {
         const { pros } = payload || {};
         if (!Array.isArray(pros) || pros.length === 0) {
@@ -110,13 +111,11 @@ async function tmsLogin(force = false) {
 
   const setCookie = resp.headers.get("set-cookie") || "";
   if (setCookie) {
-    // basic: store entire string, TMS just needs PHPSESSID etc.
     TMS_COOKIE = setCookie;
   }
 
   const json = await resp.json().catch(() => ({}));
 
-  // Sometimes UserID/UserToken are top-level, sometimes in data.*
   const userId = json.UserID || json.user_id || json?.data?.UserID || json?.data?.user_id;
   const userToken = json.UserToken || json.user_token || json?.data?.UserToken || json?.data?.user_token;
 
@@ -132,7 +131,7 @@ async function tmsLogin(force = false) {
 }
 
 /* ============================================================
-   Shared headers and fetch helper
+   Shared headers + fetch helper
 ============================================================ */
 
 async function tmsHeaders() {
@@ -156,7 +155,6 @@ async function tmsFetch(url, bodyParams, retry = 0) {
     body: bodyParams.toString()
   });
 
-  // Try basic retry on 401 or 440-ish custom
   if ((resp.status === 401 || resp.status === 440) && retry < 2) {
     await tmsLogin(true);
     return tmsFetch(url, bodyParams, retry + 1);
@@ -166,7 +164,7 @@ async function tmsFetch(url, bodyParams, retry = 0) {
 }
 
 /* ============================================================
-   Base body builder for get_tms_trace.php
+   Base body for get_tms_trace.php
 ============================================================ */
 
 function buildBaseTraceBody() {
@@ -174,7 +172,7 @@ function buildBaseTraceBody() {
 
   p.set("input_filter_tracking_num", "");
   p.set("input_billing_reference", "");
-  p.set("input_filter_pro", "");           // may override
+  p.set("input_filter_pro", "");
   p.set("input_filter_trip", "");
   p.set("input_filter_order", "");
   p.set("input_filter_pu", "");
@@ -196,7 +194,7 @@ function buildBaseTraceBody() {
   p.set("input_filter_consignee_state", "0");
   p.set("input_filter_consignee_phone", "");
   p.set("input_filter_consignee_zip", "");
-  p.set("input_filter_billto", "");        // may override for bill-to
+  p.set("input_filter_billto", "");
   p.set("input_filter_billto_code", "");
   p.set("input_filter_billto_street", "");
   p.set("input_filter_billto_city", "");
@@ -234,7 +232,7 @@ function buildBaseTraceBody() {
   p.set("input_wa2", "0");
   p.set("input_has_pro", "0");
   p.set("input_filter_scac", "");
-  p.set("input_exclude_delivered", "0");   // we filter stage in UI
+  p.set("input_exclude_delivered", "0");   // initial stage filter handled in UI
   p.set("input_filter_created_by", "");
   p.set("input_include_cancel", "0");
   p.set("input_carrier_type", "1");
@@ -248,14 +246,11 @@ function buildBaseTraceBody() {
   p.set("input_filter_contriner", "");
   p.set("input_filter_cust_rn", "");
 
-  // pagination fields will be set per call
-  // UserID, UserToken, pageName set per call
-
   return p;
 }
 
 /* ============================================================
-   traceByBillTo
+   traceByBillTo (initial TMS search)
 ============================================================ */
 
 async function traceByBillTo(billToName, pageNum, pageSize) {
@@ -277,13 +272,12 @@ async function traceByBillTo(billToName, pageNum, pageSize) {
   }
 
   const json = await resp.json().catch(() => ({}));
-  // Expecting rows[] or data.rows[]
   const rows = json.rows || json.data?.rows || [];
   return { rows };
 }
 
 /* ============================================================
-   lookupPros (multi-PRO via input_filter_pro)
+   lookupPros (multi-PRO by PRO, ANY status)
 ============================================================ */
 
 async function lookupPros(prosRaw) {
@@ -301,9 +295,8 @@ async function lookupPros(prosRaw) {
     return { rows: [] };
   }
 
-  // We can send all in one go as newline-separated string.
   const p = buildBaseTraceBody();
-  p.set("input_filter_pro", pros.join("\n"));
+  p.set("input_filter_pro", pros.join("\n"));   // newline-separated PROs
   p.set("input_page_num", "1");
   p.set("input_page_size", "10000");
   p.set("input_total_rows", "0");
