@@ -555,10 +555,8 @@
 
       async function fmsWorker(){
         while (true){
-          let idx;
-          // claim next index
           if (currentIndex >= orders.length) break;
-          idx = currentIndex++;
+          const idx = currentIndex++;
           const ord = orders[idx];
 
           const orderNo =
@@ -622,7 +620,7 @@
       const tmsJson = await tmsResp.json();
       let tmsRows = tmsJson?.rows || [];
 
-      // Total before filter (not shown, but could be logged if needed)
+      // Total before filter (not shown, but could be logged)
       const totalTmsBeforeFilter = tmsRows.length;
 
       // Filter out "Delivery Complete" stages
@@ -658,6 +656,97 @@
       }
 
       stopTmsTimer();
+
+      // 3b) CROSS-SYSTEM PRO LOOKUPS
+      setRunStatus("Reconciling FMS/TMS PROs…");
+
+      const fmsProsSet = new Set(Object.keys(fmsByPro));
+      const tmsProsSet = new Set(Object.keys(tmsByPro));
+
+      const missingInTms = [...fmsProsSet].filter(p => !tmsProsSet.has(p));
+      const missingInFms = [...tmsProsSet].filter(p => !fmsProsSet.has(p));
+
+      // TMS lookup for PROs that exist in FMS but not TMS
+      if (missingInTms.length){
+        try{
+          const resp = await fetch("/api/tms",{
+            method:"POST",
+            headers:{ "Content-Type":"application/json" },
+            body:JSON.stringify({
+              action:"lookupPros",
+              payload:{ pros: missingInTms }
+            })
+          });
+          const extraTmsJson = await resp.json();
+          const extraRows = extraTmsJson?.rows || [];
+          for (const row of extraRows){
+            const pro = row.tms_order_pro || row.tms_order_load_no || "";
+            if (!pro) continue;
+            const stage = row.tms_order_stage || "";
+            // keep same Stage filter rule
+            if (String(stage).trim().toLowerCase() === "delivery complete") continue;
+            const orderId = row.tms_order_id || row.shipment_id || "";
+            const podFound = row.pod_image === "Y";
+
+            tmsByPro[pro] = {
+              pro,
+              tmsOrderId: orderId,
+              stage,
+              podFound,
+              exception: podFound ? "Y" : "N"
+            };
+          }
+        }catch(e){
+          console.error("TMS lookupPros error", e);
+        }
+      }
+
+      // FMS lookup for PROs that exist in TMS but not FMS
+      if (missingInFms.length){
+        try{
+          const resp = await fetch("/api/fms",{
+            method:"POST",
+            headers:{ "Content-Type":"application/json" },
+            body:JSON.stringify({
+              action:"lookupPros",
+              payload:{ pros: missingInFms }
+            })
+          });
+          const extraFmsJson = await resp.json();
+          const items = extraFmsJson?.data?.items || extraFmsJson?.data?.list || [];
+          for (const ord of items){
+            const pro =
+              ord.tracking_no || ord.tracking || ord.customer_pro || ord.pro || "";
+            const proKey = pro || "";
+            if (!proKey) continue;
+
+            const orderNo =
+              ord.order_no || ord.shipment_order_no || ord.shipmentOrderNo || ord.shipment_no || "";
+
+            let statusName =
+              ord.status_name || ord.status_desc || ord.order_status || ord.status || "Unknown";
+
+            let podCount = 0;
+            let hasPod = false;
+
+            if (orderNo){
+              podCount = await getPodInfo(orderNo);
+              hasPod = podCount > 0;
+            }
+
+            fmsByPro[proKey] = {
+              pro: proKey,
+              orderNo,
+              statusName,
+              podCount,
+              hasPod,
+              exception: hasPod ? "Y" : "N"
+            };
+          }
+        }catch(e){
+          console.error("FMS lookupPros error", e);
+        }
+      }
 
       // 4) BUILD SET OF PROs THAT ARE TRUE EXCEPTIONS (POD in at least one system)
       const prosWithException = new Set();
@@ -802,7 +891,6 @@
 
       // 6) BUILD CSV (EXCEPTIONS ONLY)
       const csv = [];
-      // requested exact header casing
       csv.push("System,pro,orderid/num,stage/status,pod");
 
       function csvEscape(v){
