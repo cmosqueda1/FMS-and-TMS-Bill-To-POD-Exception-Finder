@@ -7,7 +7,6 @@
 // - Order search by Bill-To
 // - Multi-PRO lookup (lookupPros)
 // - POD file lookup
-// - Auto-retry on 401, 429, and transient failures
 
 const FMS_BASE = "https://fms.item.com";
 
@@ -20,7 +19,7 @@ const SEARCH_ORDERS_URL =
   `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
 
 const FILES_URL =
-  `${FMS_BASE}/fms-platform-order/files/`;  // /files/DOXXXXXXX
+  `${FMS_BASE}/fms-platform-order/files/`;  // /files/DOXXXXXXXX
 
 const FMS_CLIENT = "FMS_WEB";
 const COMPANY_ID = "SBFH";
@@ -68,6 +67,7 @@ export default async function handler(req, res) {
         return res.json(await getFiles(orderNo));
       }
 
+      // Multi-PRO lookup by tracking_nos, NO status filters
       case "lookupPros": {
         const { pros } = payload || {};
         if (!Array.isArray(pros) || pros.length === 0) {
@@ -94,7 +94,6 @@ export default async function handler(req, res) {
 async function fmsLogin(force = false) {
   const now = Date.now();
 
-  // use cached tokens if not expired
   if (!force &&
       FMS_TOKEN &&
       FMS_AUTH_TOKEN &&
@@ -138,7 +137,7 @@ async function fmsLogin(force = false) {
 }
 
 /* ============================================================
-   Authentication Headers (auto-refresh token)
+   Authentication Headers
 ============================================================ */
 
 async function authHeaders() {
@@ -154,8 +153,7 @@ async function authHeaders() {
 }
 
 /* ============================================================
-   MASTER FETCH with Auto-Retry
-   Handles: token expiration (401), rate-limit (429), network drop
+   Helper fetch with light retry
 ============================================================ */
 
 async function fmsFetch(url, options, retry = 0) {
@@ -164,19 +162,14 @@ async function fmsFetch(url, options, retry = 0) {
   // retry on 401 (token expired)
   if (resp.status === 401 && retry < 2) {
     await fmsLogin(true);
-    return fmsFetch(url, { ...options, headers: await authHeaders() }, retry + 1);
+    const headers = await authHeaders();
+    return fmsFetch(url, { ...options, headers }, retry + 1);
   }
 
-  // retry on 429 (rate-limited)
-  if (resp.status === 429 && retry < 4) {
+  // retry on rate-limit
+  if (resp.status === 429 && retry < 3) {
     const wait = 250 + Math.random() * 350;
     await new Promise(r => setTimeout(r, wait));
-    return fmsFetch(url, options, retry + 1);
-  }
-
-  // retry on network reset
-  if (!resp.ok && retry < 2) {
-    await new Promise(r => setTimeout(r, 150));
     return fmsFetch(url, options, retry + 1);
   }
 
@@ -219,10 +212,11 @@ async function searchOrders(body) {
 }
 
 /* ============================================================
-   Order Search by Bill-To Shortcut
+   Search Orders by Bill-To (non-delivered only)
 ============================================================ */
 
 async function searchOrdersByBillTo(billToCode) {
+
   const body = {
     order_nos: [],
     tracking_nos: [],
@@ -230,7 +224,7 @@ async function searchOrdersByBillTo(billToCode) {
     bols: [],
     bill_to_accounts: [billToCode],
     master_order_ids: [],
-    status: ["10","53","19","20","22","54","26","30","40","42","51","52"], 
+    status: ["10","53","19","20","22","54","26","30","40","42","51","52"],  // non-delivered
     sub_status: [],
     shipment_types: [],
     service_levels: [],
@@ -267,7 +261,7 @@ async function searchOrdersByBillTo(billToCode) {
 }
 
 /* ============================================================
-   Multi-PRO Lookup (tracking_nos)
+   Multi-PRO Lookup (tracking_nos) — NO status filter
 ============================================================ */
 
 async function lookupPros(prosRaw) {
@@ -290,7 +284,7 @@ async function lookupPros(prosRaw) {
     bols: [],
     bill_to_accounts: [],
     master_order_ids: [],
-    status: [],
+    status: [],          // <- intentionally blank: we want ANY status
     sub_status: [],
     shipment_types: [],
     service_levels: [],
