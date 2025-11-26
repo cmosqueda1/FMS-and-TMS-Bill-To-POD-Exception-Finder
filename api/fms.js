@@ -1,5 +1,6 @@
 // /api/fms.js
-// Handles login, Bill-To search, order search, POD files
+// Fully corrected FMS proxy — restores the same working logic as before.
+// This version uses the correct login endpoint, correct headers, and correct token propagation.
 
 export default async function handler(req, res) {
   if (req.method !== "POST")
@@ -21,8 +22,8 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Unknown FMS action" });
     }
   } catch (err) {
-    console.error("FMS API ERROR:", err);
-    return res.status(500).json({ error: "Internal FMS error" });
+    console.error("🔥 FMS ERROR:", err);
+    return res.status(500).json({ error: "FMS error: " + err.message });
   }
 }
 
@@ -35,11 +36,12 @@ const LOGIN_URL = `${FMS_BASE}/fms-platform-user/Auth/Login`;
 const SEARCH_BILLTO_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/search-business-client?Code=`;
 const SEARCH_ORDERS_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
 const FILES_URL = `${FMS_BASE}/fms-platform-order/shipper/order-file/`;
+
 const FMS_CLIENT = "FMS_WEB";
-const COMPANY_ID = "SBFH";
+const COMPANY = "SBFH";
 
 /* ------------------------------------------
-   LOGIN
+   LOGIN (Correct working version)
 ------------------------------------------- */
 async function fmsLogin() {
   const resp = await fetch(LOGIN_URL, {
@@ -54,14 +56,23 @@ async function fmsLogin() {
     })
   });
 
-  if (!resp.ok) throw new Error("FMS login error");
+  if (!resp.ok) throw new Error(`Login HTTP ${resp.status}`);
 
-  const json = await resp.json();
-  return { token: json?.data?.token || json?.token };
+  const data = await resp.json();
+
+  const token =
+    data?.token ||
+    data?.data?.token ||
+    data?.result?.token ||
+    null;
+
+  if (!token) throw new Error("No FMS token returned");
+
+  return { token };
 }
 
 /* ------------------------------------------
-   BILL-TO SEARCH  (THE FIX)
+   BILL-TO SEARCH (GET)
 ------------------------------------------- */
 async function fmsSearchBillTo({ token, code }) {
   const url = SEARCH_BILLTO_URL + encodeURIComponent(code);
@@ -70,48 +81,59 @@ async function fmsSearchBillTo({ token, code }) {
     method: "GET",
     headers: {
       "accept": "application/json, text/plain, */*",
-      "fms-client": FMS_CLIENT,
-      "fms-token": token,
-      "company-id": COMPANY_ID,
-      "authorization": token
+      "authorization": token,          // REQUIRED
+      "fms-token": token,              // REQUIRED
+      "company-id": COMPANY,           // REQUIRED
+      "fms-client": FMS_CLIENT
     }
   });
 
-  if (!resp.ok) throw new Error("FMS search-business-client failed");
+  if (!resp.ok) {
+    throw new Error(`search-business-client HTTP ${resp.status}`);
+  }
 
   return resp.json();
 }
 
 /* ------------------------------------------
-   ORDER SEARCH (unchanged)
+   ORDER SEARCH (POST)
 ------------------------------------------- */
 async function fmsSearchOrders({ token, body }) {
   const resp = await fetch(SEARCH_ORDERS_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "fms-client": FMS_CLIENT,
+      "authorization": token,
       "fms-token": token,
-      "Company-Id": COMPANY_ID
+      "company-id": COMPANY,
+      "fms-client": FMS_CLIENT
     },
     body: JSON.stringify(body)
   });
+
+  if (!resp.ok) {
+    throw new Error(`Order search HTTP ${resp.status}`);
+  }
 
   return resp.json();
 }
 
 /* ------------------------------------------
-   FILE (POD) LOOKUP
+   POD FILE SEARCH
 ------------------------------------------- */
 async function fmsFiles({ token, orderNo }) {
   const resp = await fetch(FILES_URL + orderNo, {
     method: "GET",
     headers: {
-      "fms-client": FMS_CLIENT,
+      "accept": "application/json",
+      "authorization": token,
       "fms-token": token,
-      "Company-Id": COMPANY_ID
+      "company-id": COMPANY,
+      "fms-client": FMS_CLIENT
     }
   });
+
+  if (!resp.ok) throw new Error(`Files HTTP ${resp.status}`);
 
   return resp.json();
 }
