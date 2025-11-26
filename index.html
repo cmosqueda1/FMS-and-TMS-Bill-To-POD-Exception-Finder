@@ -244,7 +244,6 @@
     <div class="pill"><span class="pill-dot"></span>Authenticated</div>
   </div>
 
-  <!-- Bill-To search -->
   <div class="card">
     <label>Bill-To (live search from FMS)</label>
     <div class="autocomplete-wrapper">
@@ -289,7 +288,6 @@
     </div>
   </div>
 
-  <!-- Results -->
   <div class="card">
     <div class="results-header">
       <strong>Results</strong>
@@ -301,7 +299,6 @@
 </div>
 
 <script>
-  // ----- GLOBAL -----
   const billToInput   = document.getElementById("billToInput");
   const billToList    = document.getElementById("billToList");
   const billToMeta    = document.getElementById("billToMeta");
@@ -391,7 +388,6 @@
     stopTmsTimer();
   }
 
-  // ----- AUTOCOMPLETE (FMS Bill-To) -----
   document.addEventListener("click",e=>{
     if (!billToList.contains(e.target) && e.target!==billToInput)
       billToList.style.display="none";
@@ -455,14 +451,12 @@
 
   billToInput.addEventListener("input",debouncedBillTo);
 
-  // ----- UTIL FOR TEXT ALIGNMENT -----
   function padRight(str, width){
     str = String(str ?? "");
     if (str.length >= width) return str;
     return str + " ".repeat(width - str.length);
   }
 
-  // ----- MAIN FMS + TMS POD LOGIC -----
   async function runPodExceptions(){
     if (!selectedBillTo || isRunning) return;
 
@@ -482,7 +476,7 @@
     startFmsTimer();
 
     try{
-      // 1) FMS SEARCH: non-delivered orders by Bill-To
+      // 1) FMS initial search (non-delivered by Bill-To)
       const body={
         order_nos:[],tracking_nos:[],customer_references:[],bols:[],
         bill_to_accounts:[selectedBillTo.code],
@@ -524,11 +518,13 @@
 
       setProgressFms(0,totalFmsOrders);
 
-      // 2) FMS POD CHECK PER ORDER — OPTIMIZED (15 parallel requests)
       const fmsByPro = {};
-      let processed = 0;
+      const fmsExtraByPro = {};
+      const tmsByPro = {};
+      const tmsExtraByPro = {};
 
       const CONCURRENCY_LIMIT = 15;
+      let processed = 0;
       let currentIndex = 0;
 
       async function getPodInfo(orderNo){
@@ -584,8 +580,7 @@
               orderNo,
               statusName,
               podCount,
-              hasPod,
-              exception: hasPod ? "Y" : "N"
+              hasPod
             };
           }
 
@@ -604,7 +599,7 @@
 
       stopFmsTimer();
 
-      // 3) TMS TRACE BY BILL-TO NAME
+      // 2) TMS initial search (Bill-To)
       setRunStatus("Querying TMS trace by Bill-To…");
       startTmsTimer();
 
@@ -620,10 +615,9 @@
       const tmsJson = await tmsResp.json();
       let tmsRows = tmsJson?.rows || [];
 
-      // Total before filter (not shown, but could be logged)
       const totalTmsBeforeFilter = tmsRows.length;
 
-      // Filter out "Delivery Complete" stages
+      // Filter out Delivery Complete ONLY for initial search
       tmsRows = tmsRows.filter(r=>{
         const stage = String(r.tms_order_stage || "").trim().toLowerCase();
         return stage !== "delivery complete";
@@ -632,7 +626,6 @@
       const totalTmsFiltered = tmsRows.length;
       setProgressTms(0,totalTmsFiltered);
 
-      const tmsByPro = {};
       let tmsProcessed = 0;
 
       for (const row of tmsRows){
@@ -647,8 +640,7 @@
           pro,
           tmsOrderId: orderId,
           stage,
-          podFound,
-          exception: podFound ? "Y" : "N"
+          podFound
         };
 
         tmsProcessed++;
@@ -657,16 +649,25 @@
 
       stopTmsTimer();
 
-      // 3b) CROSS-SYSTEM PRO LOOKUPS
-      setRunStatus("Reconciling FMS/TMS PROs…");
+      // 3) Build exception sets from INITIAL searches only
+      const fmsExceptionPros = Object.values(fmsByPro)
+        .filter(r => r.hasPod)
+        .map(r => r.pro);
 
-      const fmsProsSet = new Set(Object.keys(fmsByPro));
-      const tmsProsSet = new Set(Object.keys(tmsByPro));
+      const tmsExceptionPros = Object.values(tmsByPro)
+        .filter(r => r.podFound)
+        .map(r => r.pro);
 
-      const missingInTms = [...fmsProsSet].filter(p => !tmsProsSet.has(p));
-      const missingInFms = [...tmsProsSet].filter(p => !fmsProsSet.has(p));
+      const fmsExceptionSet = new Set(fmsExceptionPros);
+      const tmsExceptionSet = new Set(tmsExceptionPros);
 
-      // TMS lookup for PROs that exist in FMS but not TMS
+      const allExceptionPros = [...new Set([...fmsExceptionPros, ...tmsExceptionPros])];
+
+      // 4) Follow-up lookups for missing PROs (data only, no new exceptions)
+
+      // FMS exceptions without any TMS record from initial search
+      const missingInTms = fmsExceptionPros.filter(p => !tmsByPro[p]);
+
       if (missingInTms.length){
         try{
           const resp = await fetch("/api/tms",{
@@ -682,18 +683,16 @@
           for (const row of extraRows){
             const pro = row.tms_order_pro || row.tms_order_load_no || "";
             if (!pro) continue;
-            const stage = row.tms_order_stage || "";
-            // keep same Stage filter rule
-            if (String(stage).trim().toLowerCase() === "delivery complete") continue;
             const orderId = row.tms_order_id || row.shipment_id || "";
+            const stage = row.tms_order_stage || "";
             const podFound = row.pod_image === "Y";
 
-            tmsByPro[pro] = {
+            // data only, exception still driven by initial search
+            tmsExtraByPro[pro] = {
               pro,
               tmsOrderId: orderId,
               stage,
-              podFound,
-              exception: podFound ? "Y" : "N"
+              podFound
             };
           }
         }catch(e){
@@ -701,7 +700,9 @@
         }
       }
 
-      // FMS lookup for PROs that exist in TMS but not FMS
+      // TMS exceptions without any FMS record from initial search
+      const missingInFms = tmsExceptionPros.filter(p => !fmsByPro[p]);
+
       if (missingInFms.length){
         try{
           const resp = await fetch("/api/fms",{
@@ -727,20 +728,16 @@
               ord.status_name || ord.status_desc || ord.order_status || ord.status || "Unknown";
 
             let podCount = 0;
-            let hasPod = false;
-
             if (orderNo){
-              podCount = await getPodInfo(orderNo);
-              hasPod = podCount > 0;
+              podCount = await getPodInfo(orderNo);  // same POD logic as initial
             }
 
-            fmsByPro[proKey] = {
+            fmsExtraByPro[proKey] = {
               pro: proKey,
               orderNo,
               statusName,
               podCount,
-              hasPod,
-              exception: hasPod ? "Y" : "N"
+              hasPod: podCount > 0
             };
           }
         }catch(e){
@@ -748,37 +745,24 @@
         }
       }
 
-      // 4) BUILD SET OF PROs THAT ARE TRUE EXCEPTIONS (POD in at least one system)
-      const prosWithException = new Set();
-
-      for (const [pro,f] of Object.entries(fmsByPro)){
-        if (f.hasPod) prosWithException.add(pro);
-      }
-      for (const [pro,t] of Object.entries(tmsByPro)){
-        if (t.podFound) prosWithException.add(pro);
-      }
-
-      const allExceptionPros = [...prosWithException];
-
-      // partition into 3 groups based on presence in systems
+      // 5) Group pros (using both initial + extra data for presence)
       const groupBoth = [];
       const groupFmsOnly = [];
       const groupTmsOnly = [];
 
       for (const pro of allExceptionPros){
-        const f = fmsByPro[pro];
-        const t = tmsByPro[pro];
+        const hasFms = !!(fmsByPro[pro] || fmsExtraByPro[pro]);
+        const hasTms = !!(tmsByPro[pro] || tmsExtraByPro[pro]);
 
-        if (f && t){
+        if (hasFms && hasTms) {
           groupBoth.push(pro);
-        } else if (f && !t){
+        } else if (hasFms && !hasTms) {
           groupFmsOnly.push(pro);
-        } else if (!f && t){
+        } else if (!hasFms && hasTms) {
           groupTmsOnly.push(pro);
         }
       }
 
-      // sort each group by PRO (numeric if possible)
       function sortProArr(arr){
         arr.sort((a,b)=>{
           const na = Number(a), nb = Number(b);
@@ -791,87 +775,62 @@
       sortProArr(groupTmsOnly);
 
       const podExceptionCount = allExceptionPros.length;
+      const fmsExceptionCount = fmsExceptionPros.length;
+      const tmsExceptionCount = tmsExceptionPros.length;
 
-      // per-system exception counts (Exception = Y only)
-      let fmsExceptionCount = 0;
-      let tmsExceptionCount = 0;
-      for (const pro of allExceptionPros){
-        const f = fmsByPro[pro];
-        const t = tmsByPro[pro];
-        if (f && f.hasPod) fmsExceptionCount++;
-        if (t && t.podFound) tmsExceptionCount++;
-      }
-
-      // compute widths for alignment using all exception pros
+      // width calc including extra data
       let maxProLen=0,maxFmsOrderLen=0,maxTmsOrderIdLen=0;
 
       for (const pro of allExceptionPros){
         if (pro.length > maxProLen) maxProLen = pro.length;
-        const f=fmsByPro[pro];
-        const t=tmsByPro[pro];
+        const f=fmsByPro[pro] || fmsExtraByPro[pro];
+        const t=tmsByPro[pro] || tmsExtraByPro[pro];
         if (f && f.orderNo && f.orderNo.length>maxFmsOrderLen) maxFmsOrderLen=f.orderNo.length;
         if (t && t.tmsOrderId && t.tmsOrderId.length>maxTmsOrderIdLen) maxTmsOrderIdLen=t.tmsOrderId.length;
       }
 
       function buildBlock(pro, where){
         const lines=[];
-        const f=fmsByPro[pro];
-        const t=tmsByPro[pro];
+        const f=fmsByPro[pro] || fmsExtraByPro[pro] || null;
+        const t=tmsByPro[pro] || tmsExtraByPro[pro] || null;
         const proPad = padRight(pro,maxProLen);
 
-        if (where==="both"){
+        const fExc = fmsExceptionSet.has(pro) ? "Y" : "N";
+        const tExc = tmsExceptionSet.has(pro) ? "Y" : "N";
+
+        if (where==="both" || where==="fmsOnly" || where==="tmsOnly"){
           // FMS line
-          if (f && f.hasPod){
+          if (f){
             const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
+            const podText = `POD Files Found: ${f.podCount || 0}`;
             lines.push(
-              `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
+              `FMS: Exception: ${fExc} | ${proPad} -> ${doPad} | Status: ${f.statusName || "Unknown"} | ${podText}`
             );
-          } else if (f){
-            lines.push(`FMS: Exception: N | ${proPad}`);
           } else {
-            lines.push(`FMS: Exception: N | ${proPad}`);
+            lines.push(`FMS: Exception: ${fExc} | ${proPad}`);
           }
 
           // TMS line
           if (t){
             const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
             const stageText = t.stage || "Unknown";
-            const base = `TMS: Exception: ${t.exception} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
-            lines.push(t.podFound ? `${base} | POD Found` : `${base} | No POD`);
+            const base = `TMS: Exception: ${tExc} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
+            lines.push(t.podFound ? `${base} | POD Found` : `${base}`);
           } else {
-            lines.push(`TMS: Exception: N | ${proPad}`);
+            lines.push(`TMS: Exception: ${tExc} | ${proPad}`);
           }
-        }
-        else if (where==="fmsOnly"){
-          const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
-          lines.push(
-            `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
-          );
-          lines.push(`TMS: Exception: N | ${proPad}`);
-        }
-        else if (where==="tmsOnly"){
-          const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
-          const stageText = t.stage || "Unknown";
-          lines.push(`FMS: Exception: N | ${proPad}`);
-          const base = `TMS: Exception: Y | ${proPad} -> ${idPad} | Stage: ${stageText}`;
-          lines.push(`${base} | POD Found`);
         }
 
         return lines.join("\n");
       }
 
-      // 5) BUILD TEXT OUTPUT (GROUPED)
       const blocks=[];
-
-      // group 1: both systems have same PRO (at least one POD)
       for (const pro of groupBoth){
         blocks.push(buildBlock(pro,"both"));
       }
-      // group 2: only FMS has PRO (with POD)
       for (const pro of groupFmsOnly){
         blocks.push(buildBlock(pro,"fmsOnly"));
       }
-      // group 3: only TMS has PRO (with POD)
       for (const pro of groupTmsOnly){
         blocks.push(buildBlock(pro,"tmsOnly"));
       }
@@ -889,7 +848,7 @@
       const allLines = headerLines.concat(bodyText ? [bodyText] : []);
       output.textContent = allLines.join("\n");
 
-      // 6) BUILD CSV (EXCEPTIONS ONLY)
+      // CSV build (exceptions only, but includes extra data where present)
       const csv = [];
       csv.push("System,pro,orderid/num,stage/status,pod");
 
@@ -902,26 +861,26 @@
       }
 
       for (const pro of groupBoth.concat(groupFmsOnly, groupTmsOnly)){
-        const f = fmsByPro[pro];
-        const t = tmsByPro[pro];
+        const f = fmsByPro[pro] || fmsExtraByPro[pro];
+        const t = tmsByPro[pro] || tmsExtraByPro[pro];
 
-        if (f && f.hasPod){
+        if (f){
           csv.push([
             "FMS",
-            csvEscape(f.pro),
+            csvEscape(pro),
             csvEscape(f.orderNo || ""),
-            csvEscape(f.statusName),
-            csvEscape(`POD Files Found: ${f.podCount}`)
+            csvEscape(f.statusName || ""),
+            csvEscape(`POD Files Found: ${f.podCount || 0}`)
           ].join(","));
         }
 
-        if (t && t.podFound){
+        if (t){
           csv.push([
             "TMS",
-            csvEscape(t.pro),
+            csvEscape(pro),
             csvEscape(t.tmsOrderId || ""),
             csvEscape(t.stage || ""),
-            csvEscape("POD Found")
+            csvEscape(t.podFound ? "POD Found" : "")
           ].join(","));
         }
       }
@@ -944,7 +903,6 @@
     }
   }
 
-  // ----- EXPORT CSV -----
   function exportCSV(){
     if (!lastResultsCSV) return;
     const blob = new Blob([lastResultsCSV],{type:"text/csv"});
