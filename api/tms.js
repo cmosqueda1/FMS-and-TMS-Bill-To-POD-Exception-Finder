@@ -1,22 +1,21 @@
 // /api/tms.js
-// TMS-only API: login, group change, Bill-To trace search
+// TMS integration with:
+// - Login to check_login.php (UserID + UserToken)
+// - Cookie + token caching
+// - traceByBillTo (get_tms_trace.php)
+// - lookupPros (multi-PRO search via input_filter_pro, get_tms_trace.php)
 
 const TMS_BASE = "https://tms.freightapp.com";
 
 const LOGIN_URL = `${TMS_BASE}/write/check_login.php`;
-const GROUP_URL = `${TMS_BASE}/write_new/write_change_user_group.php`;
 const TRACE_URL = `${TMS_BASE}/write_new/get_tms_trace.php`;
 
-// Simple in-memory session cache (per lambda instance)
-let TMS_SESSION = {
-  cookie: null,
-  userId: null,
-  userToken: null,
-  groupId: null,
-  ts: 0,
-};
+let TMS_COOKIE = "";
+let TMS_USER_ID = "";
+let TMS_USER_TOKEN = "";
+let TMS_TS = 0;
 
-const TOKEN_TTL_MS = 55 * 60 * 1000; // 55 minutes
+const TMS_TTL_MS = 25 * 60 * 1000; // 25 minutes
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -27,251 +26,298 @@ export default async function handler(req, res) {
 
   try {
     switch (action) {
+
       case "login": {
-        const session = await tmsLoginAndGroup(true);
-        return res.json({
-          userId: session.userId,
-          userToken: session.userToken,
-          groupId: session.groupId,
-        });
+        const info = await tmsLogin(true);
+        return res.json(info);
       }
 
       case "traceByBillTo": {
         const { billToName, page_num, page_size } = payload || {};
-        if (!billToName || !String(billToName).trim()) {
+        if (!billToName) {
           return res.status(400).json({ error: "Missing billToName" });
         }
-        const data = await traceByBillToName(
-          String(billToName).trim(),
+        const data = await traceByBillTo(
+          billToName,
           page_num || 1,
           page_size || 10000
         );
         return res.json(data);
       }
 
+      case "lookupPros": {
+        const { pros } = payload || {};
+        if (!Array.isArray(pros) || pros.length === 0) {
+          return res.json({ rows: [] });
+        }
+        const data = await lookupPros(pros);
+        return res.json(data);
+      }
+
       default:
         return res.status(400).json({ error: "Unknown action" });
     }
+
   } catch (err) {
     console.error("🔥 TMS ERROR:", err);
     return res.status(500).json({ error: err.message || "TMS internal error" });
   }
 }
 
-/* ===========================================
-   LOGIN + GROUP CHANGE + SESSION
-=========================================== */
+/* ============================================================
+   LOGIN
+============================================================ */
 
-async function tmsLoginAndGroup(force = false) {
+async function tmsLogin(force = false) {
   const now = Date.now();
 
-  if (
-    !force &&
-    TMS_SESSION.cookie &&
-    TMS_SESSION.userId &&
-    TMS_SESSION.userToken &&
-    now - TMS_SESSION.ts < TOKEN_TTL_MS
-  ) {
-    return TMS_SESSION;
+  if (!force &&
+      TMS_USER_ID &&
+      TMS_USER_TOKEN &&
+      TMS_COOKIE &&
+      now - TMS_TS < TMS_TTL_MS) {
+    return { UserID: TMS_USER_ID, UserToken: TMS_USER_TOKEN };
   }
 
   const username = process.env.TMS_USER;
   const password = process.env.TMS_PASS;
-  const groupId = process.env.TMS_GROUP_ID || "28"; // from HAR, override via env if needed
 
   if (!username || !password) {
-    throw new Error("Missing TMS_USER / TMS_PASS environment variables");
+    throw new Error("Missing TMS_USER / TMS_PASS env variables");
   }
 
-  // --- LOGIN ---
-  const loginBody = new URLSearchParams({
-    username,
-    password,
-    UserID: "null",
-    UserToken: "null",
-    pageName: "/dev.html",
-  });
+  const bodyParams = new URLSearchParams();
+  bodyParams.set("username", username);
+  bodyParams.set("password", password);
+  bodyParams.set("UserID", "null");
+  bodyParams.set("UserToken", "null");
+  bodyParams.set("pageName", "/index.html");
 
-  const loginResp = await fetch(LOGIN_URL, {
+  const resp = await fetch(LOGIN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
       "X-Requested-With": "XMLHttpRequest",
-      Origin: TMS_BASE,
-      Referer: `${TMS_BASE}/dev.html`,
+      "Origin": TMS_BASE,
+      "Referer": `${TMS_BASE}/index.html`,
     },
-    body: loginBody.toString(),
-  });
-
-  if (!loginResp.ok) {
-    throw new Error(`TMS login failed HTTP ${loginResp.status}`);
-  }
-
-  // Capture PHPSESSID, etc.
-  const setCookie = loginResp.headers.get("set-cookie") || "";
-  const loginJson = await loginResp.json().catch(() => ({}));
-
-  const userId =
-    loginJson.UserID ||
-    loginJson.userId ||
-    loginJson.data?.UserID ||
-    loginJson.data?.user_id ||
-    null;
-
-  const userToken =
-    loginJson.UserToken ||
-    loginJson.userToken ||
-    loginJson.data?.UserToken ||
-    loginJson.data?.user_token ||
-    null;
-
-  if (!userId || !userToken) {
-    throw new Error("No UserID / UserToken returned from TMS login");
-  }
-
-  // --- GROUP CHANGE ---
-  const groupBody = new URLSearchParams({
-    group_id: String(groupId),
-    UserID: String(userId),
-    UserToken: String(userToken),
-    pageName: "dashboard",
-  });
-
-  const groupResp = await fetch(GROUP_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With": "XMLHttpRequest",
-      Origin: TMS_BASE,
-      Referer: `${TMS_BASE}/dev.html`,
-      Cookie: setCookie,
-    },
-    body: groupBody.toString(),
-  });
-
-  if (!groupResp.ok) {
-    throw new Error(`TMS group change failed HTTP ${groupResp.status}`);
-  }
-
-  // We keep using the same cookie + tokens for trace calls
-  TMS_SESSION = {
-    cookie: setCookie,
-    userId,
-    userToken,
-    groupId,
-    ts: now,
-  };
-
-  return TMS_SESSION;
-}
-
-/* ===========================================
-   TRACE BY BILL-TO NAME
-   POST /write_new/get_tms_trace.php
-=========================================== */
-
-async function traceByBillToName(billToName, pageNum = 1, pageSize = 10000) {
-  const session = await tmsLoginAndGroup(false);
-
-  const payload = new URLSearchParams({
-    input_filter_tracking_num: "",
-    input_billing_reference: "",
-    input_filter_pro: "",
-    input_filter_trip: "",
-    input_filter_order: "",
-    input_filter_pu: "",
-    input_filter_pickup_from: "",
-    input_filter_pickup_to: "",
-    input_filter_delivery_from: "",
-    input_filter_delivery_to: "",
-    input_filter_shipper: "",
-    input_filter_shipper_code: "",
-    input_filter_shipper_street: "",
-    input_filter_shipper_city: "",
-    input_filter_shipper_state: "0",
-    input_filter_shipper_phone: "",
-    input_filter_shipper_zip: "",
-    input_filter_consignee: "",
-    input_filter_consignee_code: "",
-    input_filter_consignee_street: "",
-    input_filter_consignee_city: "",
-    input_filter_consignee_state: "0",
-    input_filter_consignee_phone: "",
-    input_filter_consignee_zip: "",
-    input_filter_billto: billToName,              // <-- key linkage
-    input_filter_billto_code: "",
-    input_filter_billto_street: "",
-    input_filter_billto_city: "",
-    input_filter_billto_state: "0",
-    input_filter_billto_phone: "",
-    input_filter_billto_zip: "",
-    input_filter_manifest: "",
-    input_filter_interline: "",
-    input_filter_pieces: "",
-    input_filter_trailer: "",
-    input_filter_weight: "",
-    input_filter_pallet: "",
-    input_filter_ref: "",
-    input_filter_load: "",
-    input_filter_po: "",
-    input_filter_pickup_apt: "",
-    input_filter_pickup_actual_from: "",
-    input_filter_pickup_actual_to: "",
-    input_filter_delivery_apt: "",
-    input_filter_delivery_actual_from: "",
-    input_filter_delivery_actual_to: "",
-    input_filter_cust_po: "",
-    input_filter_cust_ref: "",
-    input_filter_cust_pro: "",
-    input_filter_cust_bol: "",
-    input_filter_cust_dn: "",
-    input_filter_cust_so: "",
-    input_filter_tender_pro: "",
-    input_carrier_name: "",
-    input_carrier_pro: "",
-    input_carrier_inv: "",
-    input_hold: "0",
-    input_filter_group: "0",
-    input_wa1: "0",
-    input_wa2: "0",
-    input_has_pro: "0",
-    input_filter_scac: "",
-    input_exclude_delivered: "1",               // <-- exclude delivered, like HAR
-    input_filter_created_by: "",
-    input_include_cancel: "0",
-    input_carrier_type: "1",
-    input_approved: "-1",
-    input_fk_revenue_id: "0",
-    input_stage_id: "",
-    input_status_id: "",
-    input_filter_create_date_from: "",
-    input_filter_create_date_to: "",
-    input_filter_tracking_no: "",
-    input_filter_contriner: "",
-    input_filter_cust_rn: "",
-    input_page_num: String(pageNum),
-    input_page_size: String(pageSize),
-    input_total_rows: "0",
-    UserID: String(session.userId),
-    UserToken: String(session.userToken),
-    pageName: "dashboardTmsTrace",
-  });
-
-  const resp = await fetch(TRACE_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-      "X-Requested-With": "XMLHttpRequest",
-      Origin: TMS_BASE,
-      Referer: `${TMS_BASE}/dev.html`,
-      Cookie: session.cookie || "",
-    },
-    body: payload.toString(),
+    body: bodyParams.toString()
   });
 
   if (!resp.ok) {
-    throw new Error(`TMS trace failed HTTP ${resp.status}`);
+    throw new Error(`TMS login failed HTTP ${resp.status}`);
   }
 
-  return resp.json();
+  const setCookie = resp.headers.get("set-cookie") || "";
+  if (setCookie) {
+    // basic: store entire string, TMS just needs PHPSESSID etc.
+    TMS_COOKIE = setCookie;
+  }
+
+  const json = await resp.json().catch(() => ({}));
+
+  // Sometimes UserID/UserToken are top-level, sometimes in data.*
+  const userId = json.UserID || json.user_id || json?.data?.UserID || json?.data?.user_id;
+  const userToken = json.UserToken || json.user_token || json?.data?.UserToken || json?.data?.user_token;
+
+  if (!userId || !userToken) {
+    throw new Error("TMS login did not return UserID/UserToken");
+  }
+
+  TMS_USER_ID = String(userId);
+  TMS_USER_TOKEN = String(userToken);
+  TMS_TS = now;
+
+  return { UserID: TMS_USER_ID, UserToken: TMS_USER_TOKEN };
+}
+
+/* ============================================================
+   Shared headers and fetch helper
+============================================================ */
+
+async function tmsHeaders() {
+  await tmsLogin(false);
+  return {
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Origin": TMS_BASE,
+    "Referer": `${TMS_BASE}/dev.html`,
+    "Cookie": TMS_COOKIE || ""
+  };
+}
+
+async function tmsFetch(url, bodyParams, retry = 0) {
+  const headers = await tmsHeaders();
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers,
+    body: bodyParams.toString()
+  });
+
+  // Try basic retry on 401 or 440-ish custom
+  if ((resp.status === 401 || resp.status === 440) && retry < 2) {
+    await tmsLogin(true);
+    return tmsFetch(url, bodyParams, retry + 1);
+  }
+
+  return resp;
+}
+
+/* ============================================================
+   Base body builder for get_tms_trace.php
+============================================================ */
+
+function buildBaseTraceBody() {
+  const p = new URLSearchParams();
+
+  p.set("input_filter_tracking_num", "");
+  p.set("input_billing_reference", "");
+  p.set("input_filter_pro", "");           // may override
+  p.set("input_filter_trip", "");
+  p.set("input_filter_order", "");
+  p.set("input_filter_pu", "");
+  p.set("input_filter_pickup_from", "");
+  p.set("input_filter_pickup_to", "");
+  p.set("input_filter_delivery_from", "");
+  p.set("input_filter_delivery_to", "");
+  p.set("input_filter_shipper", "");
+  p.set("input_filter_shipper_code", "");
+  p.set("input_filter_shipper_street", "");
+  p.set("input_filter_shipper_city", "");
+  p.set("input_filter_shipper_state", "0");
+  p.set("input_filter_shipper_phone", "");
+  p.set("input_filter_shipper_zip", "");
+  p.set("input_filter_consignee", "");
+  p.set("input_filter_consignee_code", "");
+  p.set("input_filter_consignee_street", "");
+  p.set("input_filter_consignee_city", "");
+  p.set("input_filter_consignee_state", "0");
+  p.set("input_filter_consignee_phone", "");
+  p.set("input_filter_consignee_zip", "");
+  p.set("input_filter_billto", "");        // may override for bill-to
+  p.set("input_filter_billto_code", "");
+  p.set("input_filter_billto_street", "");
+  p.set("input_filter_billto_city", "");
+  p.set("input_filter_billto_state", "0");
+  p.set("input_filter_billto_phone", "");
+  p.set("input_filter_billto_zip", "");
+  p.set("input_filter_manifest", "");
+  p.set("input_filter_interline", "");
+  p.set("input_filter_pieces", "");
+  p.set("input_filter_trailer", "");
+  p.set("input_filter_weight", "");
+  p.set("input_filter_pallet", "");
+  p.set("input_filter_ref", "");
+  p.set("input_filter_load", "");
+  p.set("input_filter_po", "");
+  p.set("input_filter_pickup_apt", "");
+  p.set("input_filter_pickup_actual_from", "");
+  p.set("input_filter_pickup_actual_to", "");
+  p.set("input_filter_delivery_apt", "");
+  p.set("input_filter_delivery_actual_from", "");
+  p.set("input_filter_delivery_actual_to", "");
+  p.set("input_filter_cust_po", "");
+  p.set("input_filter_cust_ref", "");
+  p.set("input_filter_cust_pro", "");
+  p.set("input_filter_cust_bol", "");
+  p.set("input_filter_cust_dn", "");
+  p.set("input_filter_cust_so", "");
+  p.set("input_filter_tender_pro", "");
+  p.set("input_carrier_name", "");
+  p.set("input_carrier_pro", "");
+  p.set("input_carrier_inv", "");
+  p.set("input_hold", "0");
+  p.set("input_filter_group", "0");
+  p.set("input_wa1", "0");
+  p.set("input_wa2", "0");
+  p.set("input_has_pro", "0");
+  p.set("input_filter_scac", "");
+  p.set("input_exclude_delivered", "0");   // we filter stage in UI
+  p.set("input_filter_created_by", "");
+  p.set("input_include_cancel", "0");
+  p.set("input_carrier_type", "1");
+  p.set("input_approved", "-1");
+  p.set("input_fk_revenue_id", "0");
+  p.set("input_stage_id", "");
+  p.set("input_status_id", "");
+  p.set("input_filter_create_date_from", "");
+  p.set("input_filter_create_date_to", "");
+  p.set("input_filter_tracking_no", "");
+  p.set("input_filter_contriner", "");
+  p.set("input_filter_cust_rn", "");
+
+  // pagination fields will be set per call
+  // UserID, UserToken, pageName set per call
+
+  return p;
+}
+
+/* ============================================================
+   traceByBillTo
+============================================================ */
+
+async function traceByBillTo(billToName, pageNum, pageSize) {
+  const { UserID, UserToken } = await tmsLogin(false);
+
+  const p = buildBaseTraceBody();
+  p.set("input_filter_billto", billToName);
+  p.set("input_page_num", String(pageNum || 1));
+  p.set("input_page_size", String(pageSize || 10000));
+  p.set("input_total_rows", "0");
+  p.set("UserID", String(UserID));
+  p.set("UserToken", String(UserToken));
+  p.set("pageName", "dashboardTmsTrace");
+
+  const resp = await tmsFetch(TRACE_URL, p);
+
+  if (!resp.ok) {
+    throw new Error(`TMS traceByBillTo failed HTTP ${resp.status}`);
+  }
+
+  const json = await resp.json().catch(() => ({}));
+  // Expecting rows[] or data.rows[]
+  const rows = json.rows || json.data?.rows || [];
+  return { rows };
+}
+
+/* ============================================================
+   lookupPros (multi-PRO via input_filter_pro)
+============================================================ */
+
+async function lookupPros(prosRaw) {
+  const { UserID, UserToken } = await tmsLogin(false);
+
+  const pros = Array.from(
+    new Set(
+      (prosRaw || [])
+        .map(p => String(p || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!pros.length) {
+    return { rows: [] };
+  }
+
+  // We can send all in one go as newline-separated string.
+  const p = buildBaseTraceBody();
+  p.set("input_filter_pro", pros.join("\n"));
+  p.set("input_page_num", "1");
+  p.set("input_page_size", "10000");
+  p.set("input_total_rows", "0");
+  p.set("UserID", String(UserID));
+  p.set("UserToken", String(UserToken));
+  p.set("pageName", "dashboardTmsTrace");
+
+  const resp = await tmsFetch(TRACE_URL, p);
+
+  if (!resp.ok) {
+    throw new Error(`TMS lookupPros failed HTTP ${resp.status}`);
+  }
+
+  const json = await resp.json().catch(() => ({}));
+  const rows = json.rows || json.data?.rows || [];
+  return { rows };
 }
