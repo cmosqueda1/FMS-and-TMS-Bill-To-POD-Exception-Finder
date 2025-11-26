@@ -1,10 +1,9 @@
 // /api/fms.js
-// FMS-only API: login via env vars, Bill-To search, order search, POD files.
+// Full FMS integration: dual-token login + Bill-To search + order query + POD file lookup
 
 const FMS_BASE = "https://fms.item.com";
 
-const LOGIN_URL =
-  `${FMS_BASE}/fms-platform-user/Auth/Login`;
+const LOGIN_URL = `${FMS_BASE}/fms-platform-user/Auth/Login`;
 
 const SEARCH_BILLTO_URL =
   `${FMS_BASE}/fms-platform-order/shipment-orders/search-business-client?Code=`;
@@ -13,22 +12,21 @@ const SEARCH_ORDERS_URL =
   `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
 
 const FILES_URL =
-  `${FMS_BASE}/fms-platform-order/shipper/order-file/`;
+  `${FMS_BASE}/fms-platform-order/files/`;  // <-- correct POD endpoint you provided
 
 const FMS_CLIENT = "FMS_WEB";
 const COMPANY_ID = "SBFH";
 
-// simple in-memory token cache (per lambda instance)
-let FMS_TOKEN = null;       // small JWT: data.token  → used as fms-token
-let FMS_AUTH_TOKEN = null;  // big JWT: data.third_party_token → used as authorization
-let FMS_TOKEN_TS = 0;       // ms timestamp
+// Cached tokens (per Vercel serverless instance)
+let FMS_TOKEN = null;          // small JWT
+let FMS_AUTH_TOKEN = null;     // big JWT
+let FMS_TOKEN_TS = 0;
 
-const TOKEN_TTL_MS = 55 * 60 * 1000; // 55 minutes safety window
+const TOKEN_TTL_MS = 55 * 60 * 1000; // 55 min safety
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
+  if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
-  }
 
   const { action, payload } = req.body || {};
 
@@ -37,186 +35,150 @@ export default async function handler(req, res) {
 
       case "login": {
         const tokens = await fmsLogin(true);
-        return res.json(tokens); // for testing/debug only
+        return res.json(tokens);
       }
 
       case "searchBillTo": {
         const { code } = payload || {};
-        if (!code || !String(code).trim()) {
+        if (!code)
           return res.status(400).json({ error: "Missing Bill-To code" });
-        }
-        const data = await searchBillTo(String(code).trim());
-        return res.json(data);
-      }
-
-      case "searchOrdersByBillTo": {
-        const { billToCode, page_number, page_size } = payload || {};
-        if (!billToCode || !String(billToCode).trim()) {
-          return res.status(400).json({ error: "Missing billToCode" });
-        }
-        const data = await searchOrdersByBillTo(
-          String(billToCode).trim(),
-          page_number || 1,
-          page_size || 10000
-        );
+        const data = await searchBillTo(code);
         return res.json(data);
       }
 
       case "searchOrdersRaw": {
         const { body } = payload || {};
-        if (!body || typeof body !== "object") {
-          return res.status(400).json({ error: "Missing body for searchOrdersRaw" });
-        }
+        if (!body)
+          return res.status(400).json({ error: "Missing body" });
         const data = await searchOrders(body);
+        return res.json(data);
+      }
+
+      case "searchOrdersByBillTo": {
+        const { billToCode } = payload || {};
+        if (!billToCode)
+          return res.status(400).json({ error: "Missing billToCode" });
+
+        const data = await searchOrdersByBillTo(billToCode);
         return res.json(data);
       }
 
       case "files": {
         const { orderNo } = payload || {};
-        if (!orderNo || !String(orderNo).trim()) {
+        if (!orderNo)
           return res.status(400).json({ error: "Missing orderNo" });
-        }
-        const data = await getFiles(String(orderNo).trim());
-        return res.json(data);
-      }
-
-      // POD check: search orders by PRO using tracking_nos only
-      case "searchOrdersForPODCheck": {
-        const { pro } = payload || {};
-        if (!pro || !String(pro).trim()) {
-          return res.status(400).json({ error: "Missing pro" });
-        }
-        const data = await searchOrdersByProForPODCheck(String(pro).trim());
+        const data = await getFiles(orderNo);
         return res.json(data);
       }
 
       default:
         return res.status(400).json({ error: "Unknown action" });
     }
+
   } catch (err) {
     console.error("🔥 FMS ERROR:", err);
     return res.status(500).json({ error: err.message || "FMS internal error" });
   }
 }
 
-/* ===========================================
-   LOGIN + TOKEN HANDLING
-   - Calls Auth/Login once
-   - Extracts BOTH:
-       data.token             → FMS small token (fms-token)
-       data.third_party_token → big OAuth token (authorization)
-=========================================== */
+/* ============================================================
+   LOGIN — Dual token handling (BIG and SMALL)
+   Returns:
+   - fmsToken = data.token
+   - authToken = data.third_party_token (BIG RSA JWT)
+============================================================ */
 
 async function fmsLogin(force = false) {
-  const now = Date.now();
 
-  if (!force && FMS_TOKEN && FMS_AUTH_TOKEN && (now - FMS_TOKEN_TS < TOKEN_TTL_MS)) {
-    return {
-      authToken: FMS_AUTH_TOKEN,
-      fmsToken: FMS_TOKEN
-    };
+  const now = Date.now();
+  if (!force &&
+    FMS_TOKEN &&
+    FMS_AUTH_TOKEN &&
+    now - FMS_TOKEN_TS < TOKEN_TTL_MS
+  ) {
+    return { authToken: FMS_AUTH_TOKEN, fmsToken: FMS_TOKEN };
   }
 
   const account = process.env.FMS_USER;
   const password = process.env.FMS_PASS;
 
-  if (!account || !password) {
-    throw new Error("Missing FMS_USER / FMS_PASS environment variables");
-  }
+  if (!account || !password)
+    throw new Error("Missing FMS_USER / FMS_PASS env variables");
 
   const resp = await fetch(LOGIN_URL, {
     method: "POST",
     headers: {
-      "fms-client": FMS_CLIENT,
       "Content-Type": "application/json",
-      "accept": "application/json, text/plain, */*"
+      "fms-client": FMS_CLIENT
     },
     body: JSON.stringify({ account, password })
   });
 
-  if (!resp.ok) {
-    throw new Error(`Login failed with HTTP ${resp.status}`);
-  }
+  if (!resp.ok)
+    throw new Error(`Login failed HTTP ${resp.status}`);
 
   const json = await resp.json().catch(() => ({}));
-  const data = json?.data || {};
+  const data = json.data || {};
 
   const fmsToken = data.token || null;
   const authToken = data.third_party_token || data.thirdPartyToken || null;
 
-  if (!fmsToken || !authToken) {
-    throw new Error("FMS Login did not return required tokens (token / third_party_token)");
-  }
+  if (!fmsToken || !authToken)
+    throw new Error("Login did not return both token and third_party_token");
 
   FMS_TOKEN = fmsToken;
   FMS_AUTH_TOKEN = authToken;
   FMS_TOKEN_TS = now;
 
-  return {
-    authToken,
-    fmsToken
-  };
+  return { authToken, fmsToken };
 }
 
-/**
- * Build common headers for authenticated FMS calls (POST / query, etc.)
- * Matches HAR for /shipment-orders/query:
- *  - authorization: <third_party_token>
- *  - fms-token: <token>
- *  - company-id, fms-client
- */
+/* ============================================================
+   Auth Headers
+============================================================ */
+
 async function authHeaders() {
   const { authToken, fmsToken } = await fmsLogin(false);
 
   return {
     "accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "authorization": authToken,
-    "fms-token": fmsToken,
+    "authorization": authToken,    // BIG JWT
+    "fms-token": fmsToken,         // SMALL JWT
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT
   };
 }
 
-/* ===========================================
-   BILL-TO SEARCH (GET)
-   EXACTLY MATCHES WEBSITE HAR:
-   GET /shipment-orders/search-business-client?Code=xxxx
-   Headers:
-     authorization: third_party_token
-     fms-token: token
-=========================================== */
+/* ============================================================
+   Bill-To Search (GET)
+============================================================ */
 
 async function searchBillTo(code) {
+
   const { authToken, fmsToken } = await fmsLogin(false);
 
   const headers = {
     "accept": "application/json, text/plain, */*",
     "authorization": authToken,
+    "fms-token": fmsToken,
     "company-id": COMPANY_ID,
-    "fms-client": FMS_CLIENT,
-    "fms-token": fmsToken
-    // IMPORTANT: no Content-Type on GET
+    "fms-client": FMS_CLIENT
   };
 
   const url = SEARCH_BILLTO_URL + encodeURIComponent(code);
 
-  const resp = await fetch(url, {
-    method: "GET",
-    headers
-  });
+  const resp = await fetch(url, { method: "GET", headers });
 
-  if (!resp.ok) {
+  if (!resp.ok)
     throw new Error(`Bill-To search failed HTTP ${resp.status}`);
-  }
 
   return resp.json();
 }
 
-/* ===========================================
-   ORDER SEARCH (POST)
-   POST /shipment-orders/query
-=========================================== */
+/* ============================================================
+   Order Query (POST)
+============================================================ */
 
 async function searchOrders(body) {
   const headers = await authHeaders();
@@ -227,44 +189,26 @@ async function searchOrders(body) {
     body: JSON.stringify(body)
   });
 
-  if (!resp.ok) {
+  if (!resp.ok)
     throw new Error(`Order search failed HTTP ${resp.status}`);
-  }
 
   return resp.json();
 }
 
-/* ===========================================
-   POD CHECK: tracking_nos ONLY
-=========================================== */
+/* ============================================================
+   Search Orders by Bill-To (same structure as your HAR)
+============================================================ */
 
-async function searchOrdersByProForPODCheck(pro) {
-  const payload = {
-    tracking_nos: [pro],
-    order_nos: [],
-    bols: [],
-    customer_references: [],
-    bill_to_accounts: [],
-    page_number: 1,
-    page_size: 200
-  };
+async function searchOrdersByBillTo(billToCode) {
 
-  return searchOrders(payload);
-}
-
-/* ===========================================
-   Search all orders by Bill-To (HAR pattern)
-=========================================== */
-
-async function searchOrdersByBillTo(billToCode, page_number = 1, page_size = 10000) {
-  const payload = {
+  const body = {
     order_nos: [],
     tracking_nos: [],
     customer_references: [],
     bols: [],
     bill_to_accounts: [billToCode],
     master_order_ids: [],
-    status: [],
+    status: ["10","53","19","20","22","54","26","30","40","42","51","52"],  // NON-delivered
     sub_status: [],
     shipment_types: [],
     service_levels: [],
@@ -293,19 +237,21 @@ async function searchOrdersByBillTo(billToCode, page_number = 1, page_size = 100
     hold: false,
     business_client: "",
     record_status: "0",
-    page_number,
-    page_size
+    page_number: 1,
+    page_size: 10000
   };
 
-  return searchOrders(payload);
+  return searchOrders(body);
 }
 
-/* ===========================================
-   POD FILE LOOKUP (GET) /shipper/order-file/{orderNo}
-   Uses the same two-token pattern.
-=========================================== */
+/* ============================================================
+   POD File Lookup (GET)
+   Correct endpoint from your HAR:
+   GET /fms-platform-order/files/DOXXXXXXXX
+============================================================ */
 
 async function getFiles(orderNo) {
+
   const { authToken, fmsToken } = await fmsLogin(false);
 
   const headers = {
@@ -314,19 +260,14 @@ async function getFiles(orderNo) {
     "fms-token": fmsToken,
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT
-    // no Content-Type for GET
   };
 
   const url = FILES_URL + encodeURIComponent(orderNo);
 
-  const resp = await fetch(url, {
-    method: "GET",
-    headers
-  });
+  const resp = await fetch(url, { method: "GET", headers });
 
-  if (!resp.ok) {
+  if (!resp.ok)
     throw new Error(`File lookup failed HTTP ${resp.status}`);
-  }
 
   return resp.json();
 }
