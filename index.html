@@ -599,7 +599,7 @@
 
       stopFmsTimer();
 
-      // 2) TMS initial search (Bill-To)
+      // 2) TMS initial search (Bill-To, then filter out Delivery Complete)
       setRunStatus("Querying TMS trace by Bill-To…");
       startTmsTimer();
 
@@ -615,9 +615,7 @@
       const tmsJson = await tmsResp.json();
       let tmsRows = tmsJson?.rows || [];
 
-      const totalTmsBeforeFilter = tmsRows.length;
-
-      // Filter out Delivery Complete ONLY for initial search
+      // filter out Delivery Complete for initial TMS set
       tmsRows = tmsRows.filter(r=>{
         const stage = String(r.tms_order_stage || "").trim().toLowerCase();
         return stage !== "delivery complete";
@@ -663,9 +661,9 @@
 
       const allExceptionPros = [...new Set([...fmsExceptionPros, ...tmsExceptionPros])];
 
-      // 4) Follow-up lookups for missing PROs (data only, no new exceptions)
+      // 4) Follow-up lookups (data only, no new exceptions)
 
-      // FMS exceptions without any TMS record from initial search
+      // FMS exceptions missing in TMS initial search -> lookup TMS by PRO
       const missingInTms = fmsExceptionPros.filter(p => !tmsByPro[p]);
 
       if (missingInTms.length){
@@ -687,7 +685,6 @@
             const stage = row.tms_order_stage || "";
             const podFound = row.pod_image === "Y";
 
-            // data only, exception still driven by initial search
             tmsExtraByPro[pro] = {
               pro,
               tmsOrderId: orderId,
@@ -700,7 +697,7 @@
         }
       }
 
-      // TMS exceptions without any FMS record from initial search
+      // TMS exceptions missing in FMS initial search -> lookup FMS by PRO
       const missingInFms = tmsExceptionPros.filter(p => !fmsByPro[p]);
 
       if (missingInFms.length){
@@ -729,7 +726,7 @@
 
             let podCount = 0;
             if (orderNo){
-              podCount = await getPodInfo(orderNo);  // same POD logic as initial
+              podCount = await getPodInfo(orderNo);
             }
 
             fmsExtraByPro[proKey] = {
@@ -745,7 +742,7 @@
         }
       }
 
-      // 5) Group pros (using both initial + extra data for presence)
+      // 5) Group pros (presence in either side, using initial + extra)
       const groupBoth = [];
       const groupFmsOnly = [];
       const groupTmsOnly = [];
@@ -798,27 +795,25 @@
         const fExc = fmsExceptionSet.has(pro) ? "Y" : "N";
         const tExc = tmsExceptionSet.has(pro) ? "Y" : "N";
 
-        if (where==="both" || where==="fmsOnly" || where==="tmsOnly"){
-          // FMS line
-          if (f){
-            const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
-            const podText = `POD Files Found: ${f.podCount || 0}`;
-            lines.push(
-              `FMS: Exception: ${fExc} | ${proPad} -> ${doPad} | Status: ${f.statusName || "Unknown"} | ${podText}`
-            );
-          } else {
-            lines.push(`FMS: Exception: ${fExc} | ${proPad}`);
-          }
+        // FMS line
+        if (f){
+          const doPad = padRight(f.orderNo || "",maxFmsOrderLen);
+          const podText = `POD Files Found: ${f.podCount || 0}`;
+          lines.push(
+            `FMS: Exception: ${fExc} | ${proPad} -> ${doPad} | Status: ${f.statusName || "Unknown"} | ${podText}`
+          );
+        } else {
+          lines.push(`FMS: Exception: ${fExc} | ${proPad}`);
+        }
 
-          // TMS line
-          if (t){
-            const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
-            const stageText = t.stage || "Unknown";
-            const base = `TMS: Exception: ${tExc} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
-            lines.push(t.podFound ? `${base} | POD Found` : `${base}`);
-          } else {
-            lines.push(`TMS: Exception: ${tExc} | ${proPad}`);
-          }
+        // TMS line
+        if (t){
+          const idPad = padRight(t.tmsOrderId || "",maxTmsOrderIdLen);
+          const stageText = t.stage || "Unknown";
+          const base = `TMS: Exception: ${tExc} | ${proPad} -> ${idPad} | Stage: ${stageText}`;
+          lines.push(t.podFound ? `${base} | POD Found` : `${base}`);
+        } else {
+          lines.push(`TMS: Exception: ${tExc} | ${proPad}`);
         }
 
         return lines.join("\n");
@@ -848,9 +843,9 @@
       const allLines = headerLines.concat(bodyText ? [bodyText] : []);
       output.textContent = allLines.join("\n");
 
-      // CSV build (exceptions only, but includes extra data where present)
+      // 6) CSV build (exceptions only, but includes extra data where present)
       const csv = [];
-      csv.push("System,pro,orderid/num,stage/status,pod");
+      csv.push("System,pro,orderid/num,stage/status,pod,Exception");
 
       function csvEscape(v){
         const s = String(v ?? "");
@@ -860,9 +855,14 @@
         return s;
       }
 
-      for (const pro of groupBoth.concat(groupFmsOnly, groupTmsOnly)){
+      const allGroupedPros = groupBoth.concat(groupFmsOnly, groupTmsOnly);
+
+      for (const pro of allGroupedPros){
         const f = fmsByPro[pro] || fmsExtraByPro[pro];
         const t = tmsByPro[pro] || tmsExtraByPro[pro];
+
+        const fExc = fmsExceptionSet.has(pro) ? "Y" : "N";
+        const tExc = tmsExceptionSet.has(pro) ? "Y" : "N";
 
         if (f){
           csv.push([
@@ -870,7 +870,8 @@
             csvEscape(pro),
             csvEscape(f.orderNo || ""),
             csvEscape(f.statusName || ""),
-            csvEscape(`POD Files Found: ${f.podCount || 0}`)
+            csvEscape(`POD Files Found: ${f.podCount || 0}`),
+            csvEscape(fExc)
           ].join(","));
         }
 
@@ -880,7 +881,8 @@
             csvEscape(pro),
             csvEscape(t.tmsOrderId || ""),
             csvEscape(t.stage || ""),
-            csvEscape(t.podFound ? "POD Found" : "")
+            csvEscape(t.podFound ? "POD Found" : ""),
+            csvEscape(tExc)
           ].join(","));
         }
       }
