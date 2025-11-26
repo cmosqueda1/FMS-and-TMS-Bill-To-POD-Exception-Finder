@@ -1,5 +1,5 @@
 // /api/fms.js
-// Serverless proxy for ALL FMS interactions required by the Bill-To POD Compare tool
+// Handles login, Bill-To search, order search, POD files
 
 export default async function handler(req, res) {
   if (req.method !== "POST")
@@ -11,8 +11,10 @@ export default async function handler(req, res) {
     switch (action) {
       case "login":
         return res.json(await fmsLogin());
+      case "searchBillTo":
+        return res.json(await fmsSearchBillTo(payload));
       case "search":
-        return res.json(await fmsSearch(payload));
+        return res.json(await fmsSearchOrders(payload));
       case "files":
         return res.json(await fmsFiles(payload));
       default:
@@ -25,16 +27,16 @@ export default async function handler(req, res) {
 }
 
 /* ------------------------------------------
-   CONSTANTS — identical to browser behavior
+   CONSTANTS
 ------------------------------------------- */
+
 const FMS_BASE = "https://fms.item.com";
 const LOGIN_URL = `${FMS_BASE}/fms-platform-user/Auth/Login`;
-const SEARCH_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
+const SEARCH_BILLTO_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/search-business-client?Code=`;
+const SEARCH_ORDERS_URL = `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
 const FILES_URL = `${FMS_BASE}/fms-platform-order/shipper/order-file/`;
-
 const FMS_CLIENT = "FMS_WEB";
-const FMS_USER = process.env.FMS_USER;
-const FMS_PASS = process.env.FMS_PASS;
+const COMPANY_ID = "SBFH";
 
 /* ------------------------------------------
    LOGIN
@@ -47,54 +49,69 @@ async function fmsLogin() {
       "fms-client": FMS_CLIENT
     },
     body: JSON.stringify({
-      account: FMS_USER,
-      password: FMS_PASS
+      account: process.env.FMS_USER,
+      password: process.env.FMS_PASS
     })
   });
 
-  if (!resp.ok) throw new Error(`FMS login HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error("FMS login error");
 
   const json = await resp.json();
-  return {
-    token: json?.token || json?.data?.token || null
-  };
+  return { token: json?.data?.token || json?.token };
 }
 
 /* ------------------------------------------
-   SEARCH ORDERS (Bill-To or PRO)
+   BILL-TO SEARCH  (THE FIX)
 ------------------------------------------- */
-async function fmsSearch({ token, body }) {
-  const resp = await fetch(SEARCH_URL, {
-    method: "POST",
+async function fmsSearchBillTo({ token, code }) {
+  const url = SEARCH_BILLTO_URL + encodeURIComponent(code);
+
+  const resp = await fetch(url, {
+    method: "GET",
     headers: {
-      "Content-Type": "application/json",
+      "accept": "application/json, text/plain, */*",
       "fms-client": FMS_CLIENT,
       "fms-token": token,
-      "Company-Id": "SBFH"
-    },
-    body: JSON.stringify(body)
+      "company-id": COMPANY_ID,
+      "authorization": token
+    }
   });
 
-  if (!resp.ok) throw new Error(`FMS search HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error("FMS search-business-client failed");
 
   return resp.json();
 }
 
 /* ------------------------------------------
-   GET ORDER FILES (POD detection)
+   ORDER SEARCH (unchanged)
+------------------------------------------- */
+async function fmsSearchOrders({ token, body }) {
+  const resp = await fetch(SEARCH_ORDERS_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "fms-client": FMS_CLIENT,
+      "fms-token": token,
+      "Company-Id": COMPANY_ID
+    },
+    body: JSON.stringify(body)
+  });
+
+  return resp.json();
+}
+
+/* ------------------------------------------
+   FILE (POD) LOOKUP
 ------------------------------------------- */
 async function fmsFiles({ token, orderNo }) {
   const resp = await fetch(FILES_URL + orderNo, {
     method: "GET",
     headers: {
-      "Content-Type": "application/json",
       "fms-client": FMS_CLIENT,
       "fms-token": token,
-      "Company-Id": "SBFH"
+      "Company-Id": COMPANY_ID
     }
   });
-
-  if (!resp.ok) throw new Error("FMS files error");
 
   return resp.json();
 }
