@@ -7,7 +7,7 @@ const LOGIN_URL =
   `${FMS_BASE}/fms-platform-user/Auth/Login`;
 
 const SEARCH_BILLTO_URL =
-  `${FMS_BASE}/fms-platform-order/shipment-orders/search-business-client?code=`;
+  `${FMS_BASE}/fms-platform-order/shipment-orders/search-business-client?Code=`;
 
 const SEARCH_ORDERS_URL =
   `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
@@ -33,9 +33,10 @@ export default async function handler(req, res) {
 
   try {
     switch (action) {
+
       case "login": {
         const token = await fmsLogin(true);
-        return res.json({ token }); // for testing/debug only
+        return res.json({ token });
       }
 
       case "searchBillTo": {
@@ -61,7 +62,6 @@ export default async function handler(req, res) {
       }
 
       case "searchOrdersRaw": {
-        // advanced: caller passes full FMS payload body
         const { body } = payload || {};
         if (!body || typeof body !== "object") {
           return res.status(400).json({ error: "Missing body for searchOrdersRaw" });
@@ -76,6 +76,15 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: "Missing orderNo" });
         }
         const data = await getFiles(String(orderNo).trim());
+        return res.json(data);
+      }
+
+      case "searchOrdersForPODCheck": {
+        const { pro } = payload || {};
+        if (!pro || !String(pro).trim()) {
+          return res.status(400).json({ error: "Missing pro" });
+        }
+        const data = await searchOrdersByProForPODCheck(String(pro).trim());
         return res.json(data);
       }
 
@@ -138,7 +147,6 @@ async function fmsLogin(force = false) {
 
 /**
  * Build common headers for authenticated FMS calls.
- * Matches HAR: authorization + fms-token + company-id + fms-client
  */
 async function authHeaders() {
   const token = await fmsLogin(false);
@@ -146,7 +154,7 @@ async function authHeaders() {
   return {
     "accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "authorization": token,   // we reuse token for both
+    "authorization": token,
     "fms-token": token,
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT
@@ -155,12 +163,22 @@ async function authHeaders() {
 
 /* ===========================================
    BILL-TO SEARCH (GET)
-   GET /shipment-orders/search-business-client?code=<user_input>
+   EXACT MATCH TO WEBSITE LOGIC
 =========================================== */
 
 async function searchBillTo(code) {
-  const headers = await authHeaders();
-  // For GET request, no body
+  const token = await fmsLogin(false);
+
+  // EXACT HEADER SET FROM HAR (NO Content-Type)
+  const headers = {
+    "accept": "application/json, text/plain, */*",
+    "authorization": token,
+    "company-id": COMPANY_ID,
+    "fms-client": FMS_CLIENT,
+    "fms-token": token
+  };
+
+  // CASE-SENSITIVE: must use "Code="
   const url = SEARCH_BILLTO_URL + encodeURIComponent(code);
 
   const resp = await fetch(url, {
@@ -177,7 +195,6 @@ async function searchBillTo(code) {
 
 /* ===========================================
    ORDER SEARCH (POST)
-   POST /shipment-orders/query
 =========================================== */
 
 async function searchOrders(body) {
@@ -196,10 +213,28 @@ async function searchOrders(body) {
   return resp.json();
 }
 
-/**
- * Convenience helper: search all orders by Bill-To code
- * using the exact payload you sent in the HAR.
- */
+/* ===========================================
+   POD CHECK: tracking_nos ONLY
+=========================================== */
+
+async function searchOrdersByProForPODCheck(pro) {
+  const payload = {
+    tracking_nos: [pro],
+    order_nos: [],
+    bols: [],
+    customer_references: [],
+    bill_to_accounts: [],
+    page_number: 1,
+    page_size: 200
+  };
+
+  return searchOrders(payload);
+}
+
+/* ===========================================
+   Search all orders by Bill-To (HAR pattern)
+=========================================== */
+
 async function searchOrdersByBillTo(billToCode, page_number = 1, page_size = 10000) {
   const payload = {
     order_nos: [],
@@ -246,7 +281,6 @@ async function searchOrdersByBillTo(billToCode, page_number = 1, page_size = 100
 
 /* ===========================================
    POD FILE LOOKUP (GET)
-   GET /shipper/order-file/{orderNo}
 =========================================== */
 
 async function getFiles(orderNo) {
