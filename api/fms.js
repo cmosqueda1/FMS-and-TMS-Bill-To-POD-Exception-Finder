@@ -19,8 +19,9 @@ const FMS_CLIENT = "FMS_WEB";
 const COMPANY_ID = "SBFH";
 
 // simple in-memory token cache (per lambda instance)
-let FMS_TOKEN = null;
-let FMS_TOKEN_TS = 0; // ms timestamp
+let FMS_TOKEN = null;       // small JWT: data.token  → used as fms-token
+let FMS_AUTH_TOKEN = null;  // big JWT: data.third_party_token → used as authorization
+let FMS_TOKEN_TS = 0;       // ms timestamp
 
 const TOKEN_TTL_MS = 55 * 60 * 1000; // 55 minutes safety window
 
@@ -35,8 +36,8 @@ export default async function handler(req, res) {
     switch (action) {
 
       case "login": {
-        const token = await fmsLogin(true);
-        return res.json({ token });
+        const tokens = await fmsLogin(true);
+        return res.json(tokens); // for testing/debug only
       }
 
       case "searchBillTo": {
@@ -79,6 +80,7 @@ export default async function handler(req, res) {
         return res.json(data);
       }
 
+      // POD check: search orders by PRO using tracking_nos only
       case "searchOrdersForPODCheck": {
         const { pro } = payload || {};
         if (!pro || !String(pro).trim()) {
@@ -99,13 +101,20 @@ export default async function handler(req, res) {
 
 /* ===========================================
    LOGIN + TOKEN HANDLING
+   - Calls Auth/Login once
+   - Extracts BOTH:
+       data.token             → FMS small token (fms-token)
+       data.third_party_token → big OAuth token (authorization)
 =========================================== */
 
 async function fmsLogin(force = false) {
   const now = Date.now();
 
-  if (!force && FMS_TOKEN && now - FMS_TOKEN_TS < TOKEN_TTL_MS) {
-    return FMS_TOKEN;
+  if (!force && FMS_TOKEN && FMS_AUTH_TOKEN && (now - FMS_TOKEN_TS < TOKEN_TTL_MS)) {
+    return {
+      authToken: FMS_AUTH_TOKEN,
+      fmsToken: FMS_TOKEN
+    };
   }
 
   const account = process.env.FMS_USER;
@@ -119,7 +128,8 @@ async function fmsLogin(force = false) {
     method: "POST",
     headers: {
       "fms-client": FMS_CLIENT,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "accept": "application/json, text/plain, */*"
     },
     body: JSON.stringify({ account, password })
   });
@@ -129,33 +139,40 @@ async function fmsLogin(force = false) {
   }
 
   const json = await resp.json().catch(() => ({}));
+  const data = json?.data || {};
 
-  const token =
-    json?.data?.token ||
-    json?.token ||
-    null;
+  const fmsToken = data.token || null;
+  const authToken = data.third_party_token || data.thirdPartyToken || null;
 
-  if (!token) {
-    throw new Error("No FMS token returned from Auth/Login");
+  if (!fmsToken || !authToken) {
+    throw new Error("FMS Login did not return required tokens (token / third_party_token)");
   }
 
-  FMS_TOKEN = token;
+  FMS_TOKEN = fmsToken;
+  FMS_AUTH_TOKEN = authToken;
   FMS_TOKEN_TS = now;
 
-  return FMS_TOKEN;
+  return {
+    authToken,
+    fmsToken
+  };
 }
 
 /**
- * Build common headers for authenticated FMS calls.
+ * Build common headers for authenticated FMS calls (POST / query, etc.)
+ * Matches HAR for /shipment-orders/query:
+ *  - authorization: <third_party_token>
+ *  - fms-token: <token>
+ *  - company-id, fms-client
  */
 async function authHeaders() {
-  const token = await fmsLogin(false);
+  const { authToken, fmsToken } = await fmsLogin(false);
 
   return {
     "accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "authorization": token,
-    "fms-token": token,
+    "authorization": authToken,
+    "fms-token": fmsToken,
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT
   };
@@ -163,22 +180,25 @@ async function authHeaders() {
 
 /* ===========================================
    BILL-TO SEARCH (GET)
-   EXACT MATCH TO WEBSITE LOGIC
+   EXACTLY MATCHES WEBSITE HAR:
+   GET /shipment-orders/search-business-client?Code=xxxx
+   Headers:
+     authorization: third_party_token
+     fms-token: token
 =========================================== */
 
 async function searchBillTo(code) {
-  const token = await fmsLogin(false);
+  const { authToken, fmsToken } = await fmsLogin(false);
 
-  // EXACT HEADER SET FROM HAR (NO Content-Type)
   const headers = {
     "accept": "application/json, text/plain, */*",
-    "authorization": token,
+    "authorization": authToken,
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT,
-    "fms-token": token
+    "fms-token": fmsToken
+    // IMPORTANT: no Content-Type on GET
   };
 
-  // CASE-SENSITIVE: must use "Code="
   const url = SEARCH_BILLTO_URL + encodeURIComponent(code);
 
   const resp = await fetch(url, {
@@ -195,6 +215,7 @@ async function searchBillTo(code) {
 
 /* ===========================================
    ORDER SEARCH (POST)
+   POST /shipment-orders/query
 =========================================== */
 
 async function searchOrders(body) {
@@ -280,18 +301,20 @@ async function searchOrdersByBillTo(billToCode, page_number = 1, page_size = 100
 }
 
 /* ===========================================
-   POD FILE LOOKUP (GET)
+   POD FILE LOOKUP (GET) /shipper/order-file/{orderNo}
+   Uses the same two-token pattern.
 =========================================== */
 
 async function getFiles(orderNo) {
-  const token = await fmsLogin(false);
+  const { authToken, fmsToken } = await fmsLogin(false);
 
   const headers = {
     "accept": "application/json, text/plain, */*",
-    "authorization": token,
-    "fms-token": token,
+    "authorization": authToken,
+    "fms-token": fmsToken,
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT
+    // no Content-Type for GET
   };
 
   const url = FILES_URL + encodeURIComponent(orderNo);
