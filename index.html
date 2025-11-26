@@ -597,8 +597,14 @@
       });
 
       const tmsJson = await tmsResp.json();
-      const tmsRows = tmsJson?.rows || [];
+      let tmsRows = tmsJson?.rows || [];
       const totalTmsOrders = tmsRows.length;
+
+      // *** NEW FILTER: Remove TMS Delivery Complete ***
+      tmsRows = tmsRows.filter(r=>{
+        const stage = String(r.tms_order_stage || "").trim().toLowerCase();
+        return stage !== "delivery complete";
+      });
 
       setProgressTms(0,totalTmsOrders);
 
@@ -624,7 +630,6 @@
         };
 
         tmsProcessed++;
-        // update every row for smoother animation
         setProgressTms(tmsProcessed,totalTmsOrders);
       }
 
@@ -709,7 +714,6 @@
               `FMS: Exception: Y | ${proPad} -> ${doPad} | Status: ${f.statusName} | POD Files Found: ${f.podCount}`
             );
           } else if (f){
-            // FMS order exists but no POD
             lines.push(`FMS: Exception: N | ${proPad}`);
           } else {
             lines.push(`FMS: Exception: N | ${proPad}`);
@@ -746,15 +750,12 @@
       // 5) BUILD TEXT OUTPUT (GROUPED)
       const blocks=[];
 
-      // group 1: both systems have same PRO (at least one POD)
       for (const pro of groupBoth){
         blocks.push(buildBlock(pro,"both"));
       }
-      // group 2: only FMS has PRO (with POD)
       for (const pro of groupFmsOnly){
         blocks.push(buildBlock(pro,"fmsOnly"));
       }
-      // group 3: only TMS has PRO (with POD)
       for (const pro of groupTmsOnly){
         blocks.push(buildBlock(pro,"tmsOnly"));
       }
@@ -762,7 +763,7 @@
       const headerLines=[];
       headerLines.push(`Bill-To: ${selectedBillTo.name} (${selectedBillTo.code})`);
       headerLines.push(`Total Non-Delivered Orders Checked (FMS): ${totalFmsOrders}`);
-      headerLines.push(`Total Non-Delivered Orders Checked (TMS): ${tmsRows.length}`);
+      headerLines.push(`Total Non-Delivered Orders Checked (TMS): ${tmsJson?.rows?.length || 0}`);
       headerLines.push(
         `POD Exceptions Found (FMS/TMS): ${podExceptionCount} | FMS: ${fmsExceptionCount} / TMS: ${tmsExceptionCount}`
       );
@@ -774,7 +775,6 @@
 
       // 6) BUILD CSV (EXCEPTIONS ONLY)
       const csv = [];
-      // requested exact header casing
       csv.push("System,pro,orderid/num,stage/status,pod");
 
       function csvEscape(v){
