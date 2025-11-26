@@ -1,5 +1,12 @@
 // /api/fms.js
-// Full FMS integration: dual-token login + Bill-To search + order query + POD file lookup
+// Full FMS integration with:
+// - Dual-token authentication
+// - Token caching + auto-refresh
+// - Bill-To search
+// - Raw order search
+// - Order search by Bill-To
+// - POD file lookup
+// - Auto-retry on 401, 429, and transient failures
 
 const FMS_BASE = "https://fms.item.com";
 
@@ -12,17 +19,17 @@ const SEARCH_ORDERS_URL =
   `${FMS_BASE}/fms-platform-order/shipment-orders/query`;
 
 const FILES_URL =
-  `${FMS_BASE}/fms-platform-order/files/`;  // <-- correct POD endpoint you provided
+  `${FMS_BASE}/fms-platform-order/files/`;  // /files/DOXXXXXXX
 
 const FMS_CLIENT = "FMS_WEB";
 const COMPANY_ID = "SBFH";
 
-// Cached tokens (per Vercel serverless instance)
-let FMS_TOKEN = null;          // small JWT
-let FMS_AUTH_TOKEN = null;     // big JWT
+// Cached tokens
+let FMS_TOKEN = null;       // SMALL JWT
+let FMS_AUTH_TOKEN = null;  // BIG RSA JWT
 let FMS_TOKEN_TS = 0;
 
-const TOKEN_TTL_MS = 55 * 60 * 1000; // 55 min safety
+const TOKEN_TTL_MS = 55 * 60 * 1000; // 55 minutes
 
 export default async function handler(req, res) {
   if (req.method !== "POST")
@@ -33,42 +40,31 @@ export default async function handler(req, res) {
   try {
     switch (action) {
 
-      case "login": {
-        const tokens = await fmsLogin(true);
-        return res.json(tokens);
-      }
+      case "login":
+        return res.json(await fmsLogin(true));
 
       case "searchBillTo": {
         const { code } = payload || {};
-        if (!code)
-          return res.status(400).json({ error: "Missing Bill-To code" });
-        const data = await searchBillTo(code);
-        return res.json(data);
+        if (!code) return res.status(400).json({ error: "Missing Bill-To code" });
+        return res.json(await searchBillTo(code));
       }
 
       case "searchOrdersRaw": {
         const { body } = payload || {};
-        if (!body)
-          return res.status(400).json({ error: "Missing body" });
-        const data = await searchOrders(body);
-        return res.json(data);
+        if (!body) return res.status(400).json({ error: "Missing body" });
+        return res.json(await searchOrders(body));
       }
 
       case "searchOrdersByBillTo": {
         const { billToCode } = payload || {};
-        if (!billToCode)
-          return res.status(400).json({ error: "Missing billToCode" });
-
-        const data = await searchOrdersByBillTo(billToCode);
-        return res.json(data);
+        if (!billToCode) return res.status(400).json({ error: "Missing billToCode" });
+        return res.json(await searchOrdersByBillTo(billToCode));
       }
 
       case "files": {
         const { orderNo } = payload || {};
-        if (!orderNo)
-          return res.status(400).json({ error: "Missing orderNo" });
-        const data = await getFiles(orderNo);
-        return res.json(data);
+        if (!orderNo) return res.status(400).json({ error: "Missing orderNo" });
+        return res.json(await getFiles(orderNo));
       }
 
       default:
@@ -82,20 +78,18 @@ export default async function handler(req, res) {
 }
 
 /* ============================================================
-   LOGIN — Dual token handling (BIG and SMALL)
-   Returns:
-   - fmsToken = data.token
-   - authToken = data.third_party_token (BIG RSA JWT)
+   LOGIN (SMALL + BIG TOKEN)
 ============================================================ */
 
 async function fmsLogin(force = false) {
-
   const now = Date.now();
+
+  // use cached tokens if not expired
   if (!force &&
-    FMS_TOKEN &&
-    FMS_AUTH_TOKEN &&
-    now - FMS_TOKEN_TS < TOKEN_TTL_MS
-  ) {
+      FMS_TOKEN &&
+      FMS_AUTH_TOKEN &&
+      now - FMS_TOKEN_TS < TOKEN_TTL_MS) {
+
     return { authToken: FMS_AUTH_TOKEN, fmsToken: FMS_TOKEN };
   }
 
@@ -134,20 +128,49 @@ async function fmsLogin(force = false) {
 }
 
 /* ============================================================
-   Auth Headers
+   Authentication Headers (auto-refresh token)
 ============================================================ */
 
 async function authHeaders() {
   const { authToken, fmsToken } = await fmsLogin(false);
-
   return {
     "accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "authorization": authToken,    // BIG JWT
-    "fms-token": fmsToken,         // SMALL JWT
+    "authorization": authToken,   // BIG JWT
+    "fms-token": fmsToken,        // SMALL JWT
     "company-id": COMPANY_ID,
     "fms-client": FMS_CLIENT
   };
+}
+
+/* ============================================================
+   MASTER FETCH with Auto-Retry
+   Handles: token expiration (401), rate-limit (429), network drop
+============================================================ */
+
+async function fmsFetch(url, options, retry = 0) {
+  const resp = await fetch(url, options);
+
+  // retry on 401 (token expired)
+  if (resp.status === 401 && retry < 2) {
+    await fmsLogin(true);
+    return fmsFetch(url, { ...options, headers: await authHeaders() }, retry + 1);
+  }
+
+  // retry on 429 (rate-limited)
+  if (resp.status === 429 && retry < 4) {
+    const wait = 250 + Math.random() * 350;
+    await new Promise(r => setTimeout(r, wait));
+    return fmsFetch(url, options, retry + 1);
+  }
+
+  // retry on network reset
+  if (!resp.ok && retry < 2) {
+    await new Promise(r => setTimeout(r, 150));
+    return fmsFetch(url, options, retry + 1);
+  }
+
+  return resp;
 }
 
 /* ============================================================
@@ -155,20 +178,10 @@ async function authHeaders() {
 ============================================================ */
 
 async function searchBillTo(code) {
-
-  const { authToken, fmsToken } = await fmsLogin(false);
-
-  const headers = {
-    "accept": "application/json, text/plain, */*",
-    "authorization": authToken,
-    "fms-token": fmsToken,
-    "company-id": COMPANY_ID,
-    "fms-client": FMS_CLIENT
-  };
-
+  const headers = await authHeaders();
   const url = SEARCH_BILLTO_URL + encodeURIComponent(code);
 
-  const resp = await fetch(url, { method: "GET", headers });
+  const resp = await fmsFetch(url, { method: "GET", headers });
 
   if (!resp.ok)
     throw new Error(`Bill-To search failed HTTP ${resp.status}`);
@@ -183,7 +196,7 @@ async function searchBillTo(code) {
 async function searchOrders(body) {
   const headers = await authHeaders();
 
-  const resp = await fetch(SEARCH_ORDERS_URL, {
+  const resp = await fmsFetch(SEARCH_ORDERS_URL, {
     method: "POST",
     headers,
     body: JSON.stringify(body)
@@ -196,11 +209,10 @@ async function searchOrders(body) {
 }
 
 /* ============================================================
-   Search Orders by Bill-To (same structure as your HAR)
+   Order Search by Bill-To Shortcut
 ============================================================ */
 
 async function searchOrdersByBillTo(billToCode) {
-
   const body = {
     order_nos: [],
     tracking_nos: [],
@@ -208,7 +220,7 @@ async function searchOrdersByBillTo(billToCode) {
     bols: [],
     bill_to_accounts: [billToCode],
     master_order_ids: [],
-    status: ["10","53","19","20","22","54","26","30","40","42","51","52"],  // NON-delivered
+    status: ["10","53","19","20","22","54","26","30","40","42","51","52"], 
     sub_status: [],
     shipment_types: [],
     service_levels: [],
@@ -245,26 +257,14 @@ async function searchOrdersByBillTo(billToCode) {
 }
 
 /* ============================================================
-   POD File Lookup (GET)
-   Correct endpoint from your HAR:
-   GET /fms-platform-order/files/DOXXXXXXXX
+   POD Files Lookup (GET)
 ============================================================ */
 
 async function getFiles(orderNo) {
-
-  const { authToken, fmsToken } = await fmsLogin(false);
-
-  const headers = {
-    "accept": "application/json, text/plain, */*",
-    "authorization": authToken,
-    "fms-token": fmsToken,
-    "company-id": COMPANY_ID,
-    "fms-client": FMS_CLIENT
-  };
-
+  const headers = await authHeaders();
   const url = FILES_URL + encodeURIComponent(orderNo);
 
-  const resp = await fetch(url, { method: "GET", headers });
+  const resp = await fmsFetch(url, { method: "GET", headers });
 
   if (!resp.ok)
     throw new Error(`File lookup failed HTTP ${resp.status}`);
